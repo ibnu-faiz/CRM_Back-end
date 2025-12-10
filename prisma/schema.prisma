@@ -1,0 +1,154 @@
+// This is your Prisma schema file
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// Enum untuk Role User
+enum UserRole {
+  ADMIN
+  SALES
+  VIEWER
+}
+
+// Enum untuk Lead Status/Stage
+enum LeadStatus {
+  LEAD_IN
+  CONTACT_MADE
+  NEED_IDENTIFIED
+  PROPOSAL_MADE
+  NEGOTIATION
+  CONTRACT_SEND
+  WON
+  LOST
+}
+
+// Enum untuk Lead Priority
+enum LeadPriority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+// BARU: Enum untuk Tipe Aktivitas
+enum ActivityType {
+  NOTE
+  CALL
+  MEETING
+  EMAIL
+  TASK
+  INVOICE
+  STATUS_CHANGE // Aktivitas otomatis
+  // Tambahkan tipe lain jika perlu
+}
+
+// ENUM BARU: Untuk status anggota tim
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  ONBOARDING
+  ON_LEAVE
+}
+
+// Model User
+model User {
+  id        String   @id @default(uuid())
+  name      String
+  email     String   @unique
+  phone     String?
+  password  String?
+  googleId  String?
+  role      UserRole @default(VIEWER)
+ 
+  avatar    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  status    UserStatus @default(ACTIVE)
+
+  resetPasswordToken   String?
+  resetPasswordExpires DateTime?
+
+  // --- FIELD BARU DARI FRONTEND ---
+  department String?
+  location   String?
+  bio        String?    @db.Text
+  skills     Json?      // MySQL tidak mendukung array, jadi kita gunakan JSON
+  joinedAt   DateTime?  // Frontend mengirim 'Joined At', kita bisa pakai ini
+
+  // Relasi atasan (manajer)
+  reportsToId String?
+  reportsTo   User?     @relation("ManagerSubordinate", fields: [reportsToId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  subordinates User[]   @relation("ManagerSubordinate")
+
+  // Relations
+  leadsCreated  Lead[] @relation("LeadCreator")
+
+
+  assignedLeads Lead[] @relation("LeadsAssigned")
+
+  activities    LeadActivity[] @relation("ActivityCreator")
+
+  @@map("users")
+}
+
+// Model Lead
+model Lead {
+  id          String       @id @default(uuid())
+  title       String
+  company     String?
+  email       String?
+  phone       String?
+  value       Float        @default(0)
+  currency    String       @default("IDR")
+  status      LeadStatus   @default(LEAD_IN)
+  priority    LeadPriority @default(MEDIUM)
+  label       String?
+  contacts    String?      // Contact person name
+  clientType  String?      // NEW or EXISTING - Tambah ini
+  dueDate     DateTime?
+  description String?      @db.Text
+  
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  wonAt       DateTime?
+  lostAt      DateTime?
+  isArchived  Boolean   @default(false)
+
+  createdById  String
+  createdBy    User     @relation("LeadCreator", fields: [createdById], references: [id])
+  
+  assignedUsers User[] @relation("LeadsAssigned")
+  activities   LeadActivity[] @relation("LeadActivities")
+
+  @@map("leads")
+}
+
+// BARU: Model untuk Semua Aktivitas Lead
+model LeadActivity {
+  id        String        @id @default(uuid())
+  type      ActivityType  // NOTE, CALL, MEETING, dll.
+  
+  // 'content' untuk teks utama (judul meeting, isi note)
+  content   String        @db.Text
+  
+  // 'meta' untuk data tambahan (durasi call, lokasi meeting, dll)
+  meta      Json?         
+
+  createdAt DateTime      @default(now())
+
+  // Relasi ke Lead
+  leadId    String
+  lead      Lead          @relation("LeadActivities", fields: [leadId], references: [id], onDelete: Cascade)
+
+  // Relasi ke User (pembuat aktivitas)
+  createdById String
+  createdBy   User          @relation("ActivityCreator", fields: [createdById], references: [id])
+
+  @@map("lead_activities")
+}
