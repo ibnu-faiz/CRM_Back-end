@@ -120,6 +120,10 @@ model Lead {
   lostAt      DateTime?
   isArchived  Boolean   @default(false)
 
+  sourceOrigin    String?  // Asal utama (Website, Ads, Referral)
+  sourceChannel   String?  // Detail media (Instagram, Google Form)
+  sourceChannelId String?  // ID unik (jika ada)
+
   createdById  String
   createdBy    User     @relation("LeadCreator", fields: [createdById], references: [id])
   
