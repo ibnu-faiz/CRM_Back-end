@@ -13,8 +13,9 @@ export const generateInvoiceNumber = async (): Promise<string> => {
   const lastInvoice = await prisma.leadActivity.findFirst({
     where: {
       type: ActivityType.INVOICE, // Hanya cari tipe INVOICE
-      // Asumsi: Invoice number disimpan di field 'content'
-      content: {
+      
+      // [PERBAIKAN]: Gunakan 'title' karena kolom 'content' sudah dihapus
+      title: {
         startsWith: prefix // Cari yang depannya 'INV/2025/12/'
       }
     },
@@ -26,10 +27,11 @@ export const generateInvoiceNumber = async (): Promise<string> => {
   // 2. Tentukan nomor urut
   let sequence = 1;
 
-  if (lastInvoice && lastInvoice.content) {
-    // Contoh content: "INV/2025/12/0005"
+  // [PERBAIKAN]: Cek 'title', bukan 'content'
+  if (lastInvoice && lastInvoice.title) {
+    // Contoh title: "INV/2025/12/0005"
     // Kita ambil bagian belakangnya ("0005")
-    const parts = lastInvoice.content.split('/');
+    const parts = lastInvoice.title.split('/');
     const lastSeqString = parts[parts.length - 1]; // "0005"
     const lastSeqNumber = parseInt(lastSeqString, 10);
 
