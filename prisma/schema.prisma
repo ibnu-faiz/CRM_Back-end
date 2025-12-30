@@ -135,15 +135,19 @@ model Lead {
 
 // BARU: Model untuk Semua Aktivitas Lead
 model LeadActivity {
-  id        String        @id @default(uuid())
-  type      ActivityType  // NOTE, CALL, MEETING, dll.
+  id        String       @id @default(uuid())
+  type      ActivityType // NOTE, CALL, MEETING, EMAIL, etc.
   
-  // 'content' untuk teks utama (judul meeting, isi note)
-  content   String        @db.Text
-  
-  // 'meta' untuk data tambahan (durasi call, lokasi meeting, dll)
-  meta      Json?         
+  // --- FIELD BARU (Update) ---
+  title       String?      // Judul (contoh: "Client Presentation")
+  description String?      @db.Text // Penjelasan detail (sebelumnya 'content')
+  location    String?      // Lokasi (contoh: "Zoom Link" atau "Kantor Cmlabs")
+  scheduledAt DateTime?    // PENTING: Untuk membedakan Upcoming vs Log biasa
+  isCompleted Boolean      @default(false) // Untuk checklist jika sudah selesai
 
+  // 'meta' tetap berguna untuk data extra (misal: durasi call, list attendees manual)
+  meta      Json?          
+  
   createdAt DateTime      @default(now())
 
   // Relasi ke Lead
