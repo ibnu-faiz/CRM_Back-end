@@ -320,19 +320,23 @@ export const createLeadNote = async (req: Request, res: Response) => {
   console.log('BACKEND_URL:', process.env.BACKEND_URL);
 
   const { leadId } = req.params;
-  const { content } = req.body; // 'content' (teks) masih ada di req.body
-  const file = req.file; // 'file' (jika ada) ada di req.file
+  const { content } = req.body; // Data dari frontend tetap bernama 'content'
+  const file = req.file; 
   const userId = (req as any).user?.userId;
 
-  if (!userId) { /* ... (error) */ }
-  if (!content) { /* ... (error) */ }
+  if (!userId) {
+     return res.status(401).json({ error: 'Unauthorized' });
+  }
+  if (!content) {
+     return res.status(400).json({ error: 'Content is required' });
+  }
   
   let meta: any = {};
 
   if (file) {
     const filePath = file.path.replace(/\\/g, '/');
     meta.attachmentUrl = `${process.env.BACKEND_URL}/${filePath}`;
-    meta.attachmentPath = filePath; // <-- 3. SIMPAN PATH LOKAL INI
+    meta.attachmentPath = filePath; 
   }
 
   try {
@@ -340,13 +344,21 @@ export const createLeadNote = async (req: Request, res: Response) => {
       data: {
         leadId: leadId,
         createdById: userId,
-        type: ActivityType.NOTE,
-        content: content,
-        meta:meta,
+        type: ActivityType.NOTE, // Pastikan ActivityType diimport
+
+        // --- PERBAIKAN DISINI ---
+        description: content, // Mapping: Variabel 'content' masuk ke kolom 'description'
+        title: 'Note',        // Kita beri judul default karena kolom 'title' wajib/ada di schema baru
+        
+        meta: meta,
+        
+        // Opsional: Set scheduledAt ke waktu sekarang agar muncul di log activity
+        scheduledAt: new Date() 
       },
     });
     res.status(201).json(newNote);
   } catch (error) {
+    console.error("Create Note Error:", error); // Log error biar gampang debug
     res.status(500).json({ error: 'Failed to create note' });
   }
 };
@@ -356,7 +368,10 @@ export const createLeadNote = async (req: Request, res: Response) => {
  */
 export const createLeadActivity = async (req: Request, res: Response) => {
   const { leadId } = req.params;
-  const { type, content, meta } = req.body;
+  
+  // Kita terima input lama ('content') dan input baru ('title', 'scheduledAt', dll)
+  // tujuannya agar kompatibel dengan frontend lama maupun baru
+  const { type, content, title, description, meta, scheduledAt, location, isCompleted } = req.body;
   
   const userId = (req as any).user?.userId;
 
@@ -366,8 +381,19 @@ export const createLeadActivity = async (req: Request, res: Response) => {
   if (!type || !Object.values(ActivityType).includes(type as ActivityType)) {
     return res.status(400).json({ error: 'Invalid activity type' });
   }
-  if (!content) {
-    return res.status(400).json({ error: 'Content (title) is required' });
+
+  // LOGIC MAPPING:
+  // 1. Tentukan Title: Gunakan 'title' jika ada, jika tidak gunakan 'content'
+  const finalTitle = title || content;
+  
+  if (!finalTitle) {
+    return res.status(400).json({ error: 'Title (content) is required' });
+  }
+
+  // 2. Tentukan Description: Cek input 'description', atau ambil dari 'meta.description'
+  let finalDescription = description;
+  if (!finalDescription && meta && meta.description) {
+      finalDescription = meta.description;
   }
 
   try {
@@ -376,16 +402,25 @@ export const createLeadActivity = async (req: Request, res: Response) => {
         leadId: leadId,
         createdById: userId,
         type: type as ActivityType,
-        content: content, // Ini adalah 'Title' dari form
-        meta: meta,       // Ini adalah { description: '...' }
+        
+        // --- PERBAIKAN DISINI (Sesuai Schema Baru) ---
+        title: finalTitle,           // Masuk ke kolom 'title'
+        description: finalDescription || '', // Masuk ke kolom 'description'
+        
+        // Field tambahan untuk Dashboard
+        location: location || null,
+        scheduledAt: scheduledAt ? new Date(scheduledAt) : new Date(), // Kalau kosong, anggap sekarang
+        isCompleted: isCompleted || false,
+
+        meta: meta, // Meta tetap disimpan sebagai JSON (opsional)
       },
     });
     res.status(201).json(newActivity);
   } catch (error) {
+    console.error("Create Activity Error:", error);
     res.status(500).json({ error: 'Failed to create activity' });
   }
 };
-
 // ... (setelah createLeadActivity)
 
 /**
@@ -428,19 +463,26 @@ export const getLeadNoteById = async (req: Request, res: Response) => {
  */
 export const updateLeadNote = async (req: Request, res: Response) => {
   const { leadId, noteId } = req.params;
-  const { content, removeAttachment } = req.body; // 'removeAttachment' adalah flag
+  const { content, removeAttachment } = req.body; // 'content' dari frontend
   const file = req.file;
   const userId = (req as any).user?.userId;
 
-  if (!content) { /* ... (error) */ }
+  if (!content) { 
+    return res.status(400).json({ error: 'Content is required' });
+  }
 
   try {
     const noteToUpdate = await prisma.leadActivity.findFirst({
       where: { id: noteId, leadId: leadId },
     });
-    if (!noteToUpdate) { /* ... (error 404) */ }
+    
+    if (!noteToUpdate) { 
+      return res.status(404).json({ error: 'Note not found' }); 
+    }
+    
+    // Cek Permission: Hanya pembuat atau ADMIN yang boleh edit
     if (noteToUpdate.createdById !== userId && (req as any).user?.role !== 'ADMIN') {
-      /* ... (error 403) */
+      return res.status(403).json({ error: 'Forbidden' });
     }
 
     // Ambil meta yang ada
@@ -466,18 +508,21 @@ export const updateLeadNote = async (req: Request, res: Response) => {
       meta.attachmentUrl = null;
       meta.attachmentPath = null;
     }
-   
 
     const updatedNote = await prisma.leadActivity.update({
       where: { id: noteId },
       data: { 
-        content: content,
-        meta: meta, // Simpan meta yang sudah diperbarui
+        // --- PERBAIKAN DISINI ---
+        description: content, // Mapping: 'content' masuk ke 'description'
+        // Kolom 'content' dihapus dari sini karena sudah tidak ada di DB
+        
+        meta: meta, 
       },
     });
 
     res.status(200).json(updatedNote);
   } catch (error) {
+    console.error("Update Note Error:", error);
     res.status(500).json({ error: 'Failed to update note' });
   }
 };
@@ -583,11 +628,18 @@ export const getLeadMeetingById = async (req: Request, res: Response) => {
  */
 export const updateLeadMeeting = async (req: Request, res: Response) => {
   const { leadId, meetingId } = req.params;
-  const { content, meta } = req.body; // 'content' (title) dan 'meta' (sisanya)
+  
+  // Kita destructure lebih banyak field untuk mendukung schema baru
+  // content = title (dari frontend lama)
+  const { content, title, meta, location, scheduledAt, description } = req.body; 
+  
   const userId = (req as any).user?.userId;
 
-  if (!content) {
-    return res.status(400).json({ error: 'Meeting title (content) is required' });
+  // Logic: Title bisa dari 'title' atau 'content'
+  const finalTitle = title || content;
+
+  if (!finalTitle) {
+    return res.status(400).json({ error: 'Meeting title is required' });
   }
 
   try {
@@ -603,16 +655,30 @@ export const updateLeadMeeting = async (req: Request, res: Response) => {
       return res.status(403).json({ error: 'Access denied to update this meeting' });
     }
 
+    // Cek apakah ada description di dalam meta (untuk backward compatibility)
+    let finalDescription = description;
+    if (!finalDescription && meta && meta.description) {
+        finalDescription = meta.description;
+    }
+
     const updatedMeeting = await prisma.leadActivity.update({
       where: { id: meetingId },
       data: { 
-        content: content,
-        meta: meta, // Simpan seluruh objek meta baru
+        // --- PERBAIKAN DISINI ---
+        title: finalTitle,       // Mapping: 'content' masuk ke 'title'
+        description: finalDescription || '', // Mapping description
+        
+        // Field tambahan (Update jika dikirim frontend)
+        location: location,
+        scheduledAt: scheduledAt ? new Date(scheduledAt) : undefined,
+        
+        meta: meta, // Meta tetap disimpan full
       },
     });
 
     res.status(200).json(updatedMeeting);
   } catch (error) {
+    console.error("Update Meeting Error:", error);
     res.status(500).json({ error: 'Failed to update meeting' });
   }
 };
@@ -698,11 +764,17 @@ export const getLeadCallById = async (req: Request, res: Response) => {
  */
 export const updateLeadCall = async (req: Request, res: Response) => {
   const { leadId, callId } = req.params;
-  const { content, meta } = req.body; // 'content' (title) dan 'meta' (sisanya)
+  
+  // Destructure input lama ('content') dan input baru ('title', 'scheduledAt', dll)
+  const { content, title, meta, description, scheduledAt } = req.body; 
+  
   const userId = (req as any).user?.userId;
 
-  if (!content) {
-    return res.status(400).json({ error: 'Call title (content) is required' });
+  // Logic Mapping: Gunakan 'title' jika ada, jika tidak gunakan 'content'
+  const finalTitle = title || content;
+
+  if (!finalTitle) {
+    return res.status(400).json({ error: 'Call title is required' });
   }
 
   try {
@@ -718,20 +790,32 @@ export const updateLeadCall = async (req: Request, res: Response) => {
       return res.status(403).json({ error: 'Access denied to update this call' });
     }
 
+    // Cek description (opsional, jaga-jaga kalau frontend kirim lewat meta)
+    let finalDescription = description;
+    if (!finalDescription && meta && meta.description) {
+        finalDescription = meta.description;
+    }
+
     const updatedCall = await prisma.leadActivity.update({
       where: { id: callId },
       data: { 
-        content: content,
-        meta: meta, // Simpan seluruh objek meta baru
+        // --- PERBAIKAN DISINI ---
+        title: finalTitle,        // Mapping: 'content' masuk ke 'title'
+        description: finalDescription || '', // Mapping description
+        
+        // Field tambahan (bisa diupdate jika frontend mengirimnya)
+        scheduledAt: scheduledAt ? new Date(scheduledAt) : undefined,
+        
+        meta: meta, 
       },
     });
 
     res.status(200).json(updatedCall);
   } catch (error) {
+    console.error("Update Call Error:", error);
     res.status(500).json({ error: 'Failed to update call' });
   }
 };
-
 /**
  * Menghapus CALL
  */
@@ -824,14 +908,18 @@ export const sendLeadEmail = async (req: Request, res: Response) => {
         leadId: id,
         createdById: tokenUser.userId,
         type: ActivityType.EMAIL,
-        content: subject,
+        
+        // --- PERBAIKAN DISINI ---
+        title: subject,  // Ganti 'content' jadi 'title'
+        description: message || '', // Opsional: Simpan body email di description
+        
         meta: {
           status: isDraftBool ? 'DRAFT' : 'SENT',
           from: fromLabel,
           to, cc, bcc, replyTo: finalReplyTo,
           messageBody: message,
-          attachmentUrl: savedAttachmentUrl, // URL bersih (http://...)
-          attachmentPath: savedAttachmentPath // Path lokal (uploads/...)
+          attachmentUrl: savedAttachmentUrl, 
+          attachmentPath: savedAttachmentPath 
         }
       },
       include: {
@@ -921,7 +1009,7 @@ export const updateLeadEmail = async (req: Request, res: Response) => {
     let currentMeta = (emailToUpdate.meta as any) || {};
     
     // Setup Data Baru
-    const newSubject = subject || emailToUpdate.content;
+    const newSubject = subject || emailToUpdate.title;
     const newMessage = message || currentMeta.messageBody;
     const newTo = to || currentMeta.to;
     const newCc = cc || currentMeta.cc;
@@ -992,9 +1080,11 @@ export const updateLeadEmail = async (req: Request, res: Response) => {
 
     const updatedEmail = await prisma.leadActivity.update({
       where: { id: emailId },
-      data: { content: newSubject, meta: currentMeta },
+      data: { 
+         title: newSubject, // Ganti 'content' jadi 'title'
+         meta: currentMeta 
+      },
     });
-
     res.status(200).json({ 
       success: true, 
       message: isSendingNow ? "Draft sent successfully." : "Draft updated.",
@@ -1076,11 +1166,11 @@ export const createLeadInvoice = async (req: Request, res: Response) => {
     const sourceData = req.body.meta || req.body;
 
     const { 
-      amount, dueDate, items, notes, 
+      dueDate, items, notes, 
       billedBy, billedTo, 
       subtotal, tax, totalAmount, 
       status, invoiceDate 
-    } = sourceData; 
+    } = sourceData;
     
     // @ts-ignore
     const userId = req.user?.userId;
@@ -1095,18 +1185,24 @@ export const createLeadInvoice = async (req: Request, res: Response) => {
         leadId: leadId,
         createdById: userId,
         type: ActivityType.INVOICE,
-        content: invoiceNumber, 
+        
+        // --- PERBAIKAN DISINI ---
+        title: invoiceNumber,   // Ganti 'content' jadi 'title'
+        description: 'Invoice', // Isi description default biar tidak null
+        
         meta: {
-          // Gunakan data yang sudah diambil dari sourceData
           status: status || 'draft', 
           items: items || [],
           notes: notes || '',
           billedBy: billedBy || '',
           billedTo: billedTo || '',
+          
+          // Angka
           subtotal: subtotal || 0,
           tax: tax || 0,
-          totalAmount: totalAmount || 0,
+          totalAmount: totalAmount || 0, // Pastikan ini terpakai
           
+          // Tanggal (Penting dikonversi ke Date object)
           invoiceDate: invoiceDate ? new Date(invoiceDate) : new Date(),
           dueDate: dueDate ? new Date(dueDate) : null,
         }
@@ -1179,9 +1275,11 @@ export const getLeadInvoiceById = async (req: Request, res: Response) => {
 export const updateLeadInvoice = async (req: Request, res: Response) => {
   const { leadId, invoiceId } = req.params;
   
-  // [FIX UTAMA]: Baca dari meta juga untuk update
-  const sourceData = req.body.meta || req.body;
-  const { content } = req.body; // Content (No Invoice) tetap di root body atau bisa dari meta
+  // Ambil data dari body. Support 'content' (frontend lama) dan 'title' (frontend baru)
+  const { content, title, meta } = req.body;
+  
+  // [FIX UTAMA]: Baca detail invoice dari meta atau root body
+  const sourceData = meta || req.body;
 
   const { 
       items, notes, billedBy, billedTo, 
@@ -1204,6 +1302,12 @@ export const updateLeadInvoice = async (req: Request, res: Response) => {
       return res.status(403).json({ error: 'Access denied' });
     }
 
+    // Logic Mapping: 
+    // 1. Coba ambil 'title' baru
+    // 2. Kalau tidak ada, ambil 'content' (input lama)
+    // 3. Kalau tidak ada juga, pakai title yang sudah ada di database (biar gak hilang)
+    const finalTitle = title || content || invoiceToUpdate.title;
+
     // Update Meta
     const updatedMeta = {
       ...(invoiceToUpdate.meta as any), // Pertahankan data lama
@@ -1222,13 +1326,20 @@ export const updateLeadInvoice = async (req: Request, res: Response) => {
     const updatedInvoice = await prisma.leadActivity.update({
       where: { id: invoiceId },
       data: { 
-        content: content || invoiceToUpdate.content,
+        // --- PERBAIKAN DISINI ---
+        title: finalTitle, // Kolom 'content' diganti jadi 'title'
+        
+        // Opsional: Jika Anda ingin 'dueDate' invoice muncul di Kalender Dashboard sebagai 'Upcoming Activity',
+        // Anda bisa menyalakan baris di bawah ini:
+        // scheduledAt: dueDate ? new Date(dueDate) : undefined,
+
         meta: updatedMeta, 
       },
     });
 
     res.status(200).json(updatedInvoice);
   } catch (error) {
+    console.error("Update Invoice Error:", error);
     res.status(500).json({ error: 'Failed to update invoice' });
   }
 };
