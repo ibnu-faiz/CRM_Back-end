@@ -516,3 +516,84 @@ export const getLeadsSourceChart = async (req: Request, res: Response): Promise<
     res.status(500).json({ error: "Internal Server Error" });
   }
 };
+
+export const getQuarterSummary = async (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user; // Asumsi user id & role ada di req.user dari middleware
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth(); // 0 = Jan, 11 = Dec
+
+    // --- 1. HITUNG RENTANG TANGGAL QUARTER ---
+    // Rumus mencari bulan awal quarter: (Bulan Sekarang / 3) * 3
+    const quarterStartMonth = Math.floor(currentMonth / 3) * 3;
+    
+    // Tanggal Mulai: Tanggal 1 di bulan awal quarter
+    const startDate = new Date(currentYear, quarterStartMonth, 1);
+    
+    // Tanggal Akhir: Tanggal 0 di bulan setelah quarter (artinya tanggal terakhir bulan sebelumnya)
+    // jam 23:59:59
+    const endDate = new Date(currentYear, quarterStartMonth + 3, 0, 23, 59, 59, 999);
+
+    // --- 2. BUAT FILTER DATABASE ---
+    const whereClause: any = {
+      // Hanya yang SUDAH DEAL (WON)
+      status: 'WON',
+      // Sesuai kesepakatan: JANGAN hitung yang di-archive
+      isArchived: false,
+      // Filter Tanggal Closing (updatedAt) harus di dalam Quarter ini
+      updatedAt: {
+        gte: startDate,
+        lte: endDate,
+      },
+    };
+
+    // Filter Role (Sales cuma liat punya sendiri)
+    if (user.role === 'SALES') {
+      whereClause.assignedUsers = {
+        some: {
+          id: user.userId // Sesuaikan dengan field ID di token Anda
+        }
+      };
+    }
+
+    // --- 3. EKSEKUSI AGREGASI (HITUNG CEPAT) ---
+    // Kita minta Database yang menjumlahkan (_sum) dan menghitung (_count)
+    const result = await prisma.lead.aggregate({
+      _sum: {
+        value: true, // Total Revenue
+      },
+      _count: {
+        id: true,    // Total Deals
+      },
+      where: whereClause,
+    });
+
+    // --- 4. OLAH DATA HASIL ---
+    const totalRevenue = result._sum.value || 0; // Kalau null jadi 0
+    const totalDeals = result._count.id || 0;
+    
+    // Hitung Rata-rata (Average Size)
+    // Hindari pembagian dengan nol (division by zero)
+    const averageSize = totalDeals > 0 ? Math.round(totalRevenue / totalDeals) : 0;
+
+    // Response ke Frontend
+    res.json({
+      quarter: Math.floor(currentMonth / 3) + 1, // Info ini Q berapa (1/2/3/4)
+      year: currentYear,
+      range: {
+        start: startDate,
+        end: endDate
+      },
+      data: {
+        revenue: totalRevenue,
+        deals: totalDeals,
+        average: averageSize
+      }
+    });
+
+  } catch (error) {
+    console.error("Error fetching quarter summary:", error);
+    res.status(500).json({ error: "Failed to fetch quarter summary" });
+  }
+};
