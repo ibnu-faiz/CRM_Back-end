@@ -26,9 +26,10 @@ export const getAllActivities = async (req: Request, res: Response) => {
         lead: {
           select: {
             id: true,
-            company: true,
+            company: true,  
             contacts: true,
             isArchived: true,
+            status: true,
             assignedUsers: {
               select: {
                 id: true,
