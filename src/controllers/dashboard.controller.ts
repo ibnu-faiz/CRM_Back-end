@@ -8,28 +8,27 @@ export const getDashboardStats = async (req: Request, res: Response): Promise<vo
     // @ts-ignore
     const userRole = req.user?.role;
     
-    // 1. TANGKAP PARAMETER FILTER (Default: 'month')
+    // 1. TANGKAP PARAMETER FILTER
     const { range } = req.query; 
     const isAllTime = range === 'all';
 
-    // 2. SETUP TANGGAL
+    // 2. SETUP TANGGAL (Logic Mas Sudah Benar)
     const now = new Date();
-    let startDate: Date | undefined; // Kalau undefined berarti dari awal jaman (All Time)
-    let endDate = new Date(); // Sampai detik ini
+    let startDate: Date | undefined; 
+    let endDate = new Date(); 
     
     let prevStartDate: Date | undefined;
     let prevEndDate: Date | undefined;
 
     if (!isAllTime) {
-        // Logika "Current Month"
-        startDate = new Date(now.getFullYear(), now.getMonth(), 1); // Tgl 1 bulan ini
-        endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0); // Tgl terakhir bulan ini
+        // Current Month
+        startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+        endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0);
 
-        // Logika "Last Month" (Untuk hitung % change)
+        // Last Month
         prevStartDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
         prevEndDate = new Date(now.getFullYear(), now.getMonth(), 0);
     } else {
-        // Logika "All Time" -> Tidak ada start date, tidak ada previous date
         startDate = undefined; 
         prevStartDate = undefined; 
     }
@@ -40,18 +39,14 @@ export const getDashboardStats = async (req: Request, res: Response): Promise<vo
           isArchived: false
         };
         
-        // Filter Tanggal
+        // PENTING: Kita pakai createdAt. Jadi ini menghitung "Lahirnya Lead"
         if (sDate && eDate) {
             condition.createdAt = { gte: sDate, lte: eDate };
         }
 
-        // --- REVISI LOGIC SALES DISINI ---
         if (userRole === 'SALES') {
-            // Ganti assignedToId dengan assignedUsers logic
             condition.assignedUsers = {
-                some: {
-                    id: userId // Pastikan userId bertipe Number/Int
-                }
+                some: { id: Number(userId) } // Pastikan Number
             };
         }
 
@@ -61,76 +56,76 @@ export const getDashboardStats = async (req: Request, res: Response): Promise<vo
     const currentFilter = baseFilter(startDate, endDate);
     const prevFilter = baseFilter(prevStartDate, prevEndDate);
 
-    // 4. EKSEKUSI QUERY DATABASE (PARALLEL)
-    // Kita butuh banyak data, jadi kita jalankan serentak biar cepat
+    // 4. EKSEKUSI QUERY DATABASE
     const [
-        // A. Stats Utama (Pipeline)
+        // A. Stats Utama (TOTAL INFLOW)
         currPipeline, prevPipeline,
         
-        // B. Metrics Row (Won, Lost, Total Leads)
+        // B. Metrics Row
         currWon, prevWon,
         currLost, prevLost,
         currTotal, prevTotal
     ] = await Promise.all([
-        // A. Pipeline Queries (Status Aktif saja)
+        // --- [PERUBAHAN UTAMA DISINI] ---
+        // Kita HAPUS "status: { notIn: ... }"
+        // Tujuannya: Menghitung total nilai lead yang DIBUAT bulan ini (Total New Opportunity)
+        // Tidak peduli apakah sekarang dia sudah Won atau Lost, yang penting dia lahir bulan ini.
         prisma.lead.aggregate({
             _sum: { value: true },
             _count: { id: true },
-            where: { ...currentFilter, status: { notIn: ['WON', 'LOST'] } }
+            where: currentFilter // <--- Filter Status Dihapus
         }),
         prisma.lead.aggregate({
             _sum: { value: true },
             _count: { id: true },
-            where: { ...prevFilter, status: { notIn: ['WON', 'LOST'] } }
+            where: prevFilter // <--- Filter Status Dihapus
         }),
 
-        // B. Metrics Queries
-        // 1. Total Won
+        // B. Metrics Queries (Ini tetap sama, count spesifik)
         prisma.lead.count({ where: { ...currentFilter, status: 'WON' } }),
         prisma.lead.count({ where: { ...prevFilter, status: 'WON' } }),
 
-        // 2. Total Lost
         prisma.lead.count({ where: { ...currentFilter, status: 'LOST' } }),
         prisma.lead.count({ where: { ...prevFilter, status: 'LOST' } }),
 
-        // 3. Total Leads (Semua status masuk)
         prisma.lead.count({ where: currentFilter }),
         prisma.lead.count({ where: prevFilter }),
     ]);
 
     // 5. FUNGSI HITUNG PERSENTASE
     const calculateChange = (current: number, last: number) => {
-        if (isAllTime) return 0; // Kalau All Time, tidak ada kenaikan/penurunan
+        if (isAllTime) return 0;
         if (last === 0) return current > 0 ? 100 : 0;
         return Math.round(((current - last) / last) * 100);
     };
 
-    // 6. OLAH DATA UTAMA (PIPELINE)
+    // 6. OLAH DATA
     const statsPipelineValue = Number(currPipeline._sum.value) || 0;
-    const statsActiveDeals = Number(currPipeline._count.id) || 0;
-    const statsAvgDeal = statsActiveDeals > 0 ? Math.round(statsPipelineValue / statsActiveDeals) : 0;
+    const statsTotalNewLeads = Number(currPipeline._count.id) || 0; // Diganti nama variabel biar jelas
+    const statsAvgDeal = statsTotalNewLeads > 0 ? Math.round(statsPipelineValue / statsTotalNewLeads) : 0;
 
     const prevPipelineValue = Number(prevPipeline._sum.value) || 0;
-    const prevActiveDeals = Number(prevPipeline._count.id) || 0;
-    const prevAvgDeal = prevActiveDeals > 0 ? Math.round(prevPipelineValue / prevActiveDeals) : 0;
+    const prevTotalNewLeads = Number(prevPipeline._count.id) || 0;
+    const prevAvgDeal = prevTotalNewLeads > 0 ? Math.round(prevPipelineValue / prevTotalNewLeads) : 0;
 
-    // 7. OLAH DATA METRICS (METRICS ROW)
-    // Conversion Rate = (Won / Total Leads) * 100
+    // 7. Hitung Conversion Rate
     const currConversionRate = currTotal > 0 ? Math.round((currWon / currTotal) * 100) : 0;
     const prevConversionRate = prevTotal > 0 ? Math.round((prevWon / prevTotal) * 100) : 0;
 
-    // 8. RESPONSE JSON LENGKAP
+    // 8. RESPONSE
     res.json({
-      // Bagian Atas (Big Stats)
+      // BIG STATS (Definisi Baru: Performance Bulan Ini)
       pipelineValue: {
-        value: statsPipelineValue,
+        value: statsPipelineValue, // Total Nilai Lead Baru
         change: calculateChange(statsPipelineValue, prevPipelineValue),
         isPositive: calculateChange(statsPipelineValue, prevPipelineValue) >= 0
       },
       activeDeals: {
-        value: statsActiveDeals,
-        change: calculateChange(statsActiveDeals, prevActiveDeals),
-        isPositive: calculateChange(statsActiveDeals, prevActiveDeals) >= 0
+        // Karena logic "Active" mas sudah diganti ke "Metric Inflow",
+        // Variabel ini sekarang merepresentasikan "Total Deals Created"
+        value: statsTotalNewLeads, 
+        change: calculateChange(statsTotalNewLeads, prevTotalNewLeads),
+        isPositive: calculateChange(statsTotalNewLeads, prevTotalNewLeads) >= 0
       },
       avgDeal: {
         value: statsAvgDeal,
@@ -138,7 +133,7 @@ export const getDashboardStats = async (req: Request, res: Response): Promise<vo
         isPositive: calculateChange(statsAvgDeal, prevAvgDeal) >= 0
       },
 
-      // Bagian Bawah (Metrics Row)
+      // METRICS ROW (Detail)
       metrics: {
         totalWon: {
             value: currWon,
@@ -148,15 +143,15 @@ export const getDashboardStats = async (req: Request, res: Response): Promise<vo
         totalLost: {
             value: currLost,
             change: calculateChange(currLost, prevLost),
-            isPositive: false // Lost naik = Negatif (bad thing)
+            isPositive: false 
         },
-        totalLeads: {
+        totalLeads: { // Ini sama dengan activeDeals di atas (redundant tapi gpp buat UI)
             value: currTotal,
             change: calculateChange(currTotal, prevTotal),
             isPositive: calculateChange(currTotal, prevTotal) >= 0
         },
-        conversionRate: { // Pengganti Active Leads
-            value: currConversionRate, // Ini persen (misal: 25)
+        conversionRate: { 
+            value: currConversionRate, 
             change: calculateChange(currConversionRate, prevConversionRate),
             isPositive: calculateChange(currConversionRate, prevConversionRate) >= 0
         }
