@@ -1,6 +1,6 @@
 // src/routes/dashboardRoutes.ts
 import express from 'express';
-import { getDashboardStats, getLeadsChart , getRevenueChart, getRecentDeals, getPipelineStats, getLeadsSourceChart, getQuarterSummary} from '../controllers/dashboard.controller';
+import { getDashboardStats, getLeadsChart , getRevenueChart, getRecentDeals, getPipelineStats, getLeadsSourceChart, getQuarterSummary, getDashboardSchedule } from '../controllers/dashboard.controller';
 import { authenticateToken } from '../middleware/auth.middleware'
 const router = express.Router();
 
@@ -18,5 +18,9 @@ router.get('/pipeline-stats', authenticateToken, getPipelineStats);
 router.get('/leads-source', authenticateToken, getLeadsSourceChart);
 
 router.get('/quarter-summary', authenticateToken, getQuarterSummary);
+
+router.get('/schedule', authenticateToken, getDashboardSchedule);
+
+
 
 export default router;
