@@ -680,4 +680,4 @@ export const getDashboardSchedule = async (req: Request, res: Response): Promise
     console.error("[getDashboardSchedule] Error:", error);
     res.status(500).json({ error: "Internal Server Error" });
   }
-};
+};  
