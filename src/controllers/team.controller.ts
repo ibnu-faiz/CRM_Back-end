@@ -49,7 +49,9 @@ export const getTeamMemberById = async (req: Request, res: Response) => {
                 id: true,
                 title: true,
                 status: true,
-                company: true
+                company: true,
+                createdAt: true,
+                value: true
             }
         }
         // ------------------------------------------
