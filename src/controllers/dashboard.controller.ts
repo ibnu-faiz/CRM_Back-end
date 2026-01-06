@@ -504,45 +504,45 @@ export const getQuarterSummary = async (req: Request, res: Response): Promise<vo
     // @ts-ignore
     const userRole = user?.role;
 
-    const { month, year } = req.query;
+    const { month, year, includeDetails } = req.query; // Tambah includeDetails
 
     const now = new Date();
-    // Gunakan filter user, atau default ke waktu saat ini
+    // Default ke waktu saat ini jika param tidak ada
     const targetYear = year ? Number(year) : now.getFullYear();
     const targetMonth = month ? Number(month) : now.getMonth(); 
 
-    // --- LOGIKA QUARTER (SUDAH BENAR) ---
-    // Q1: Jan(0), Feb(1), Mar(2) -> Start Month 0
+    // --- LOGIKA QUARTER ---
+    // Q1: Jan-Mar, Q2: Apr-Jun, dst.
     const quarterStartMonth = Math.floor(targetMonth / 3) * 3;
-
     const startDate = new Date(targetYear, quarterStartMonth, 1);
-    // Trik mendapatkan detik terakhir di bulan ke-3 dari quarter
+    
+    // Akhir dari kuartal (3 bulan ke depan, tanggal 0 = hari terakhir bulan sebelumnya)
     const endDate = new Date(targetYear, quarterStartMonth + 3, 0, 23, 59, 59, 999);
-
+    
     const quarterNumber = (quarterStartMonth / 3) + 1;
 
     // --- FILTER DATABASE ---
     const whereClause: any = {
-      status: 'WON',
-      // SARAN: Hapus isArchived: false jika ingin melihat history lama yang sudah diarsip
-      // isArchived: false, 
-      
-      // PERBAIKAN: Gunakan wonAt agar data tidak berpindah saat diedit
-      wonAt: {
+      status: 'WON', // Hanya hitung yang sudah deal
+      wonAt: {       // Filter berdasarkan tanggal deal (wonAt)
         gte: startDate,
         lte: endDate,
       },
-      // JIKA TERPAKSA pakai updatedAt, sadari risikonya data pindah quarter saat diedit
+      // isArchived: false, // Uncomment jika ingin menyembunyikan arsip
     };
 
+    // Filter Khusus Role SALES: Hanya melihat data miliknya sendiri
     if (userRole === 'SALES') {
       whereClause.assignedUsers = {
         some: {
-          id: !isNaN(Number(userId)) ? Number(userId) : userId
+          // PERBAIKAN: Jangan paksa convert ke Number jika ID Anda UUID (String)
+          // Jika DB Anda pakai Integer ID, ganti jadi: Number(userId)
+          id: userId 
         }
       };
     }
 
+    // 1. AGGREGATE SUMMARY (Total Revenue, Total Deals)
     const result = await prisma.lead.aggregate({
       _sum: { value: true },
       _count: { id: true },
@@ -553,16 +553,40 @@ export const getQuarterSummary = async (req: Request, res: Response): Promise<vo
     const totalDeals = Number(result._count.id) || 0;
     const averageSize = totalDeals > 0 ? Math.round(totalRevenue / totalDeals) : 0;
 
+    // 2. GET TOP LEADS (Hanya jika diminta via query param 'includeDetails')
+    // Ini menghemat performa saat hanya me-load card kecil di dashboard
+    let topLeads: any[] = [];
+    
+    if (includeDetails === 'true') {
+      topLeads = await prisma.lead.findMany({
+        where: whereClause,
+        orderBy: {
+          value: 'desc', // Urutkan dari nilai terbesar
+        },
+        take: 100, // Ambil top 5 saja
+        select: {
+          id: true,
+          title: true,
+          company: true,
+          value: true,
+          wonAt: true, // Penting untuk ditampilkan di frontend
+        },
+      });
+    }
+
+    // 3. KIRIM RESPONSE
     res.json({
       quarter: quarterNumber,
       year: targetYear,
-      // Kirim label tanggal agar frontend tau range pastinya
+      // Label rentang tanggal untuk UI (misal: "Jan - Mar")
       rangeLabel: `${startDate.toLocaleString('default', { month: 'short' })} - ${endDate.toLocaleString('default', { month: 'short' })}`,
       data: {
         revenue: totalRevenue,
         deals: totalDeals,
         average: averageSize
-      }
+      },
+      // Array ini akan kosong jika includeDetails=false, atau berisi data jika true
+      topLeads: topLeads 
     });
 
   } catch (error) {
