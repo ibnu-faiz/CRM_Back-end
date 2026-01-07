@@ -51,10 +51,25 @@ export const getTeamMemberById = async (req: Request, res: Response) => {
                 status: true,
                 company: true,
                 createdAt: true,
-                value: true
+                value: true,
+                assignedUsers: {
+                    select: {
+                        name: true,
+                        avatar: true,
+                    }
+                }
+
             }
-        }
+        },
         // ------------------------------------------
+        leadsCreated: {
+            select: {
+                id: true, title: true, status: true, company: true, createdAt: true, value: true,
+                // Kita perlu tahu siapa yang mengerjakan lead buatan admin ini
+                assignedUsers: { select: { name: true, avatar: true } }
+            },
+            orderBy: { createdAt: 'desc' } // Urutkan dari yang terbaru
+        }
       },
     });
 
