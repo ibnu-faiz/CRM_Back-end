@@ -5,6 +5,15 @@ import fs from 'fs/promises';
 import path from 'path';
 import { sendCRMEmail } from '../utils/email';
 import { generateInvoiceNumber } from '../utils/invoiceGenerator';
+import { sendNotification } from '../utils/notification';
+
+const formatStatus = (status: string) => {
+  if (!status) return "";
+  return status
+    .replace(/_/g, " ")
+    .toLowerCase()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+};
 
 // 🔹 GET /api/leads
 export const getAllLeads = async (req: Request, res: Response): Promise<void> => {
@@ -115,6 +124,33 @@ export const createLead = async (req: Request, res: Response): Promise<void> => 
       },
     });
 
+   if (lead.assignedUsers && lead.assignedUsers.length > 0) {
+      for (const user of lead.assignedUsers) {
+        await sendNotification(user.id, "notifyLeadAssign", {
+          title: "New Lead Assigned",
+          message: `You have been assigned to lead: ${lead.title} (${lead.company || 'No Company'})`,
+          link: `/leads/${lead.id}`,
+          type: "INFO"
+        });
+      }
+    }
+
+    // SKENARIO B: Lead Masuk tapi Belum Ada Sales (notifyNewLead - Khusus Admin)
+    if (!lead.assignedUsers || lead.assignedUsers.length === 0) {
+      const admins = await prisma.user.findMany({ where: { role: 'ADMIN' }, select: { id: true } });
+      for (const admin of admins) {
+        await sendNotification(admin.id, "notifyNewLead", {
+          title: "New Unassigned Lead",
+          message: `New lead "${lead.title}" created without sales assignment.`,
+          link: `/leads/${lead.id}`,
+          type: "WARNING"
+        });
+      }
+    }
+    // ============================================================
+    // SELESAI INTEGRASI NOTIFIKASI
+    // ============================================================
+
     res.status(201).json({ lead, message: 'Lead created successfully' });
   } catch (error) {
     console.error('Create lead error:', error);
@@ -126,10 +162,9 @@ export const createLead = async (req: Request, res: Response): Promise<void> => 
 export const updateLead = async (req: Request, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
-    // --- PERBAIKAN: Pisahkan 'assignedUserIds' dari 'updateData'
     const { assignedUserIds, ...updateData } = req.body;
 
-    // Ambil lead yang ada, sertakan user yang ditugaskan untuk otorisasi
+    // 1. Ambil Data Lama (Untuk perbandingan status lama vs baru)
     const existingLead = await prisma.lead.findUnique({ 
       where: { id },
       include: { assignedUsers: { select: { id: true } } } 
@@ -140,7 +175,7 @@ export const updateLead = async (req: Request, res: Response): Promise<void> => 
       return;
     }
 
-    // --- PERBAIKAN: Logika otorisasi untuk SALES (Admin akan lolos)
+    // 2. Cek Otorisasi (Sales cuma boleh edit lead sendiri)
     if (
       req.user?.role === 'SALES' && 
       !existingLead.assignedUsers.some(user => user.id === req.user?.userId)
@@ -149,27 +184,88 @@ export const updateLead = async (req: Request, res: Response): Promise<void> => 
       return;
     }
 
+    // 3. Set Tanggal Won/Lost Otomatis
     if (updateData.status === 'WON' && existingLead.status !== 'WON') {
       updateData.wonAt = new Date();
     } else if (updateData.status === 'LOST' && existingLead.status !== 'LOST') {
       updateData.lostAt = new Date();
     }
 
+    // 4. Lakukan Update ke Database
     const lead = await prisma.lead.update({
       where: { id },
       data: {
         ...updateData,
         dueDate: updateData.dueDate ? new Date(updateData.dueDate) : undefined,
-        // --- PERBAIKAN: Gunakan 'set' untuk me-replace daftar user
         assignedUsers: assignedUserIds ? {
           set: (assignedUserIds as string[]).map(id => ({ id: id }))
-        } : undefined // 'set' akan mengganti semua user lama dengan daftar baru
+        } : undefined 
       },
       include: {
-        // --- PERBAIKAN: Menggunakan 'assignedUsers'
         assignedUsers: { select: { id: true, name: true, email: true, avatar: true } },
       },
     });
+
+    // ============================================================
+    // MULAI INTEGRASI NOTIFIKASI UPDATE
+    // ============================================================
+
+    // SKENARIO A: Re-assignment (Admin mengubah petugas Sales)
+    // Kita cek apakah ada request 'assignedUserIds' yg dikirim
+    if (assignedUserIds && lead.assignedUsers.length > 0) {
+       for (const user of lead.assignedUsers) {
+         // Cek logic user baru/lama jika perlu, atau kirim ke semua sales aktif
+         await sendNotification(user.id, "notifyLeadAssign", {
+            title: "Lead Assignment Update",
+            message: `You are now assigned to handle "${lead.title}".`,
+            link: `/leads/${lead.id}`,
+            type: "INFO"
+         });
+       }
+    }
+
+    // SKENARIO B: Status Berubah (Penting!)
+    if (updateData.status && updateData.status !== existingLead.status) {
+        const newStatus = updateData.status;
+
+        // A. Notify Admin (Hanya jika Deal WON atau LOST)
+        if (newStatus === 'WON' || newStatus === 'LOST') {
+            const admins = await prisma.user.findMany({ where: { role: 'ADMIN' }, select: { id: true }});
+            // Gunakan 'SUCCESS' untuk Won, 'ERROR' (Merah) untuk Lost
+            const type = newStatus === 'WON' ? 'SUCCESS' : 'ERROR'; 
+            
+            for (const admin of admins) {
+                await sendNotification(admin.id, "notifyDealStatus", {
+                    title: `Deal ${newStatus === 'WON' ? 'Won! 🎉' : 'Lost 📉'}`,
+                    // Pakai formatStatus disini
+                    message: `Lead "${lead.title}" has been marked as ${formatStatus(newStatus)}.`,
+                    link: `/leads/${lead.id}`,
+                    type: type
+                });
+            }
+        }
+
+        // B2. Jika ADMIN yang mengubah status -> Beritahu Sales (Supaya sales tau update dari atasan)
+        if (req.user?.role === 'ADMIN' && lead.assignedUsers.length > 0) {
+             
+             // [BARU] Ubah status jadi kalimat rapi
+             const readableStatus = formatStatus(newStatus); 
+
+             for (const user of lead.assignedUsers) {
+                await sendNotification(user.id, "notifyLeadUpdate", {
+                    title: "Status Updated",
+                    // Pesan jadi: "Admin updated status of "PT ABC" to Contact Made."
+                    message: `Admin updated status of "${lead.title}" to ${readableStatus}.`,
+                    link: `/leads/${lead.id}`,
+                    type: "WARNING"
+                });
+             }
+        }
+    }
+
+    // ============================================================
+    // SELESAI INTEGRASI NOTIFIKASI
+    // ============================================================
 
     res.status(200).json({ lead, message: 'Lead updated successfully' });
   } catch (error) {
@@ -368,29 +464,20 @@ export const createLeadNote = async (req: Request, res: Response) => {
  */
 export const createLeadActivity = async (req: Request, res: Response) => {
   const { leadId } = req.params;
-  
-  // Kita terima input lama ('content') dan input baru ('title', 'scheduledAt', dll)
-  // tujuannya agar kompatibel dengan frontend lama maupun baru
   const { type, content, title, description, meta, scheduledAt, location, isCompleted } = req.body;
   
   const userId = (req as any).user?.userId;
+  const userRole = (req as any).user?.role; // Ambil Role User
 
-  if (!userId) {
-    return res.status(401).json({ error: 'Unauthorized. User ID not found.' });
-  }
+  if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+  
   if (!type || !Object.values(ActivityType).includes(type as ActivityType)) {
     return res.status(400).json({ error: 'Invalid activity type' });
   }
 
-  // LOGIC MAPPING:
-  // 1. Tentukan Title: Gunakan 'title' jika ada, jika tidak gunakan 'content'
   const finalTitle = title || content;
-  
-  if (!finalTitle) {
-    return res.status(400).json({ error: 'Title (content) is required' });
-  }
+  if (!finalTitle) return res.status(400).json({ error: 'Title required' });
 
-  // 2. Tentukan Description: Cek input 'description', atau ambil dari 'meta.description'
   let finalDescription = description;
   if (!finalDescription && meta && meta.description) {
       finalDescription = meta.description;
@@ -402,19 +489,42 @@ export const createLeadActivity = async (req: Request, res: Response) => {
         leadId: leadId,
         createdById: userId,
         type: type as ActivityType,
-        
-        // --- PERBAIKAN DISINI (Sesuai Schema Baru) ---
-        title: finalTitle,           // Masuk ke kolom 'title'
-        description: finalDescription || '', // Masuk ke kolom 'description'
-        
-        // Field tambahan untuk Dashboard
+        title: finalTitle,
+        description: finalDescription || '',
         location: location || null,
-        scheduledAt: scheduledAt ? new Date(scheduledAt) : new Date(), // Kalau kosong, anggap sekarang
+        scheduledAt: scheduledAt ? new Date(scheduledAt) : new Date(),
         isCompleted: isCompleted || false,
-
-        meta: meta, // Meta tetap disimpan sebagai JSON (opsional)
+        meta: meta,
       },
+      // [PERBAIKAN]: Include Lead & AssignedUsers untuk Notifikasi
+      include: {
+        lead: {
+          include: {
+            assignedUsers: { select: { id: true, name: true } }
+          }
+        }
+      }
     });
+
+    // --- NOTIFICATION LOGIC ---
+    // Jika ADMIN yang membuat Activity (Meeting/Call) -> Notif ke Sales
+    if (userRole === 'ADMIN' && newActivity.lead?.assignedUsers) {
+        
+        const typeLabel = type === 'MEETING' ? 'Meeting' : 'Call';
+        
+        for (const sales of newActivity.lead.assignedUsers) {
+            // Jangan notif diri sendiri
+            if (sales.id !== userId) {
+                await sendNotification(sales.id, "notifyActivity", {
+                    title: `New ${typeLabel} Scheduled`,
+                    message: `Admin scheduled a ${typeLabel.toLowerCase()} regarding "${newActivity.title}" on ${new Date(newActivity.scheduledAt).toLocaleDateString()}.`,
+                    link: `/leads/${leadId}`,
+                    type: "INFO"
+                });
+            }
+        }
+    }
+
     res.status(201).json(newActivity);
   } catch (error) {
     console.error("Create Activity Error:", error);
@@ -1160,9 +1270,6 @@ export const deleteLeadEmail = async (req: Request, res: Response) => {
 export const createLeadInvoice = async (req: Request, res: Response) => {
   try {
     const { leadId } = req.params;
-    
-    // [FIX UTAMA]: Ambil data dari 'req.body.meta' karena Frontend mengirimnya di dalam object meta
-    // Jika tidak ada di meta, coba cari di root body (fallback)
     const sourceData = req.body.meta || req.body;
 
     const { 
@@ -1174,21 +1281,20 @@ export const createLeadInvoice = async (req: Request, res: Response) => {
     
     // @ts-ignore
     const userId = req.user?.userId;
+    // @ts-ignore
+    const userName = req.user?.name || 'Sales'; // Ambil nama user untuk pesan notif
 
     if (!userId) return res.status(401).json({ message: "Unauthorized" });
 
-    // Generate Auto Number
-    const invoiceNumber = await generateInvoiceNumber();
+    const invoiceNumber = await generateInvoiceNumber(); // Pastikan fungsi ini ada
 
     const newInvoice = await prisma.leadActivity.create({
       data: {
         leadId: leadId,
         createdById: userId,
-        type: ActivityType.INVOICE,
-        
-        // --- PERBAIKAN DISINI ---
-        title: invoiceNumber,   // Ganti 'content' jadi 'title'
-        description: 'Invoice', // Isi description default biar tidak null
+        type: ActivityType.INVOICE, // Pastikan Enum ini ada
+        title: invoiceNumber,
+        description: 'Invoice',
         
         meta: {
           status: status || 'draft', 
@@ -1196,21 +1302,38 @@ export const createLeadInvoice = async (req: Request, res: Response) => {
           notes: notes || '',
           billedBy: billedBy || '',
           billedTo: billedTo || '',
-          
-          // Angka
           subtotal: subtotal || 0,
           tax: tax || 0,
-          totalAmount: totalAmount || 0, // Pastikan ini terpakai
-          
-          // Tanggal (Penting dikonversi ke Date object)
+          totalAmount: totalAmount || 0,
           invoiceDate: invoiceDate ? new Date(invoiceDate) : new Date(),
           dueDate: dueDate ? new Date(dueDate) : null,
         }
       },
+      // [PERBAIKAN]: Include Lead Company & Creator Name untuk Notifikasi
       include: {
+        lead: { select: { company: true, title: true } },
         createdBy: { select: { id: true, name: true, avatar: true } }
       }
     });
+
+    // --- NOTIFICATION LOGIC ---
+    // Beritahu SEMUA ADMIN bahwa Invoice baru telah dibuat
+    const admins = await prisma.user.findMany({ 
+        where: { role: 'ADMIN' }, 
+        select: { id: true } 
+    });
+
+    for (const admin of admins) {
+        // Jangan notif diri sendiri jika yang buat adalah Admin itu sendiri
+        if (admin.id !== userId) {
+            await sendNotification(admin.id, "notifyInvoice", {
+                title: "New Invoice Created",
+                message: `${newInvoice.createdBy?.name || userName} created invoice #${invoiceNumber} for ${newInvoice.lead?.company || 'Client'}.`,
+                link: `/leads/${leadId}`, // Arahkan ke Lead Detail
+                type: "INFO"
+            });
+        }
+    }
 
     return res.status(201).json({
       success: true,
@@ -1275,10 +1398,8 @@ export const getLeadInvoiceById = async (req: Request, res: Response) => {
 export const updateLeadInvoice = async (req: Request, res: Response) => {
   const { leadId, invoiceId } = req.params;
   
-  // Ambil data dari body. Support 'content' (frontend lama) dan 'title' (frontend baru)
+  // Ambil data body
   const { content, title, meta } = req.body;
-  
-  // [FIX UTAMA]: Baca detail invoice dari meta atau root body
   const sourceData = meta || req.body;
 
   const { 
@@ -1289,53 +1410,73 @@ export const updateLeadInvoice = async (req: Request, res: Response) => {
 
   // @ts-ignore
   const userId = req.user?.userId;
+  // @ts-ignore
+  const userRole = req.user?.role; // Ambil role untuk cek Admin
 
   try {
+    // 1. Ambil Data Lama (Untuk perbandingan status)
     const invoiceToUpdate = await prisma.leadActivity.findFirst({
       where: { id: invoiceId, leadId: leadId },
     });
 
     if (!invoiceToUpdate) return res.status(404).json({ error: 'Invoice not found' });
 
+    // Cek Permission
     // @ts-ignore
-    if (invoiceToUpdate.createdById !== userId && req.user?.role !== 'ADMIN') {
+    if (invoiceToUpdate.createdById !== userId && userRole !== 'ADMIN') {
       return res.status(403).json({ error: 'Access denied' });
     }
 
-    // Logic Mapping: 
-    // 1. Coba ambil 'title' baru
-    // 2. Kalau tidak ada, ambil 'content' (input lama)
-    // 3. Kalau tidak ada juga, pakai title yang sudah ada di database (biar gak hilang)
     const finalTitle = title || content || invoiceToUpdate.title;
+    const oldStatus = (invoiceToUpdate.meta as any)?.status; // Simpan status lama
 
     // Update Meta
     const updatedMeta = {
-      ...(invoiceToUpdate.meta as any), // Pertahankan data lama
+      ...(invoiceToUpdate.meta as any),
       status,
-      items,
-      notes,
-      billedBy,
-      billedTo,
-      subtotal,
-      tax,
-      totalAmount,
+      items, notes, billedBy, billedTo, 
+      subtotal, tax, totalAmount,
       invoiceDate: invoiceDate ? new Date(invoiceDate) : null,
       dueDate: dueDate ? new Date(dueDate) : null,
     };
 
+    // 2. Lakukan Update Database
     const updatedInvoice = await prisma.leadActivity.update({
       where: { id: invoiceId },
       data: { 
-        // --- PERBAIKAN DISINI ---
-        title: finalTitle, // Kolom 'content' diganti jadi 'title'
-        
-        // Opsional: Jika Anda ingin 'dueDate' invoice muncul di Kalender Dashboard sebagai 'Upcoming Activity',
-        // Anda bisa menyalakan baris di bawah ini:
-        // scheduledAt: dueDate ? new Date(dueDate) : undefined,
-
+        title: finalTitle,
         meta: updatedMeta, 
       },
+      // [PERBAIKAN 1]: Include Lead & AssignedUsers agar kita tahu notif dikirim ke siapa
+      include: {
+        lead: {
+            include: {
+                assignedUsers: { select: { id: true } }
+            }
+        }
+      }
     });
+
+    // 3. [PERBAIKAN UTAMA]: Logika Notifikasi "PAID"
+    // Cek: Apakah Status Baru = 'PAID' DAN Status Lama BUKAN 'PAID'?
+    const isNewStatusPaid = (status === 'PAID' || status === 'paid');
+    const isOldStatusNotPaid = (oldStatus !== 'PAID' && oldStatus !== 'paid');
+
+    if (isNewStatusPaid && isOldStatusNotPaid) {
+        // Cek apakah lead punya sales?
+        if (updatedInvoice.lead?.assignedUsers) {
+            for (const sales of updatedInvoice.lead.assignedUsers) {
+                // Kirim notif ke Sales (walau admin yg update)
+                // Jika sales update sendiri, dia tetap dapat notif sebagai konfirmasi (opsional)
+                await sendNotification(sales.id, "notifyInvoice", {
+                    title: "Payment Received! 💰",
+                    message: `Invoice #${updatedInvoice.title} for ${updatedInvoice.lead.company || 'Client'} has been marked as PAID.`,
+                    link: `/leads/${leadId}`,
+                    type: "SUCCESS" // Hijau (Uang Masuk)
+                });
+            }
+        }
+    }
 
     res.status(200).json(updatedInvoice);
   } catch (error) {
