@@ -12,6 +12,8 @@ import aiRoutes from './routes/ai.routes';
 import dashboardRoutes from './routes/dashboard.routes';
 import activitiesRoutes from './routes/activities.routes';
 import globalSearchRoutes from './routes/globalSearch.routes';
+import notificationRoutes from './routes/notification.routes';
+import profileRoutes from './routes/profile.routes';
 
 dotenv.config();
 
@@ -57,6 +59,8 @@ app.use('/uploads', express.static(path.join(__dirname, '../uploads'), {
   }
 }));
 
+app.use('/api/public', express.static(path.join(__dirname, '../public')));
+
 // =======================================================================
 // 4. ROUTES
 // =======================================================================
@@ -76,6 +80,8 @@ app.use('/api/sales', salesRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/activities', activitiesRoutes);
 app.use('/api/global-search', globalSearchRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/profile', profileRoutes);
 
 // =======================================================================
 // 5. GLOBAL ERROR HANDLER (JARING PENGAMAN TERAKHIR)
