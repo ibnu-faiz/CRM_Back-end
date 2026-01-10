@@ -93,6 +93,7 @@ model User {
   assignedLeads Lead[] @relation("LeadsAssigned")
 
   activities    LeadActivity[] @relation("ActivityCreator")
+  activitiesAttended LeadActivity[] @relation("ActivityAttendees")
 
   notifyLeadAssign    Boolean @default(true) // Sales: Saat dapat tugas
   notifyLeadUpdate    Boolean @default(true) // Sales: Saat status berubah
@@ -167,6 +168,8 @@ model LeadActivity {
   // Relasi ke User (pembuat aktivitas)
   createdById String
   createdBy   User          @relation("ActivityCreator", fields: [createdById], references: [id])
+
+  attendees   User[]        @relation("ActivityAttendees")
 
   @@map("lead_activities")
 }
