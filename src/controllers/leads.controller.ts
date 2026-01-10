@@ -464,7 +464,7 @@ export const createLeadNote = async (req: Request, res: Response) => {
  */
 export const createLeadActivity = async (req: Request, res: Response) => {
   const { leadId } = req.params;
-  const { type, content, title, description, meta, scheduledAt, location, isCompleted } = req.body;
+  const { type, content, title, description, meta, scheduledAt, location, isCompleted, attendees } = req.body;
   
   const userId = (req as any).user?.userId;
   const userRole = (req as any).user?.role; // Ambil Role User
@@ -495,6 +495,11 @@ export const createLeadActivity = async (req: Request, res: Response) => {
         scheduledAt: scheduledAt ? new Date(scheduledAt) : new Date(),
         isCompleted: isCompleted || false,
         meta: meta,
+        ...(attendees && Array.isArray(attendees) ? {
+            attendees: {
+                connect: attendees.map((id: string) => ({ id: id }))
+            }
+        } : {})
       },
       // [PERBAIKAN]: Include Lead & AssignedUsers untuk Notifikasi
       include: {
@@ -502,6 +507,12 @@ export const createLeadActivity = async (req: Request, res: Response) => {
           include: {
             assignedUsers: { select: { id: true, name: true } }
           }
+        },
+        attendees: {
+            select: { id: true, name: true, avatar: true, email: true }
+        },
+        createdBy: {
+            select: { id: true, name: true, avatar: true }
         }
       }
     });
@@ -695,11 +706,17 @@ export const getLeadMeetings = async (req: Request, res: Response) => {
     const meetings = await prisma.leadActivity.findMany({
       where: {
         leadId,
-        type: ActivityType.MEETING, // Hanya ambil tipe MEETING
+        type: ActivityType.MEETING, 
       },
       orderBy: { createdAt: 'desc' },
       include: {
-        createdBy: { select: { id: true, name: true, avatar: true } },
+        createdBy: { 
+            select: { id: true, name: true, avatar: true } 
+        },
+        // 👇 Include Attendees agar avatar muncul di List
+        attendees: { 
+            select: { id: true, name: true, avatar: true, email: true }
+        }
       },
     });
     res.status(200).json(meetings);
@@ -709,7 +726,7 @@ export const getLeadMeetings = async (req: Request, res: Response) => {
 };
 
 /**
- * Mengambil SATU meeting berdasarkan ID
+ * 2. GET SINGLE MEETING (Detail)
  */
 export const getLeadMeetingById = async (req: Request, res: Response) => {
   const { leadId, meetingId } = req.params;
@@ -720,12 +737,17 @@ export const getLeadMeetingById = async (req: Request, res: Response) => {
         leadId: leadId,
         type: ActivityType.MEETING,
       },
+      // 👇 TAMBAHKAN INI (Penting untuk view detail/modal edit)
+      include: {
+        createdBy: { select: { id: true, name: true, avatar: true } },
+        attendees: { select: { id: true, name: true, avatar: true, email: true } }
+      }
     });
 
     if (!meeting) {
       return res.status(404).json({ error: 'Meeting not found' });
     }
-    // Otorisasi bisa ditambahkan di sini jika perlu
+    
     res.status(200).json(meeting);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch meeting' });
@@ -733,19 +755,15 @@ export const getLeadMeetingById = async (req: Request, res: Response) => {
 };
 
 /**
- * Meng-update MEETING
- * Berbeda dari Note, 'content' adalah 'title', dan sisanya ada di 'meta'
+ * 3. UPDATE MEETING
  */
 export const updateLeadMeeting = async (req: Request, res: Response) => {
   const { leadId, meetingId } = req.params;
   
-  // Kita destructure lebih banyak field untuk mendukung schema baru
-  // content = title (dari frontend lama)
-  const { content, title, meta, location, scheduledAt, description } = req.body; 
+  // 👇 1. AMBIL 'attendees' DARI BODY
+  const { content, title, meta, location, scheduledAt, description, attendees } = req.body; 
   
   const userId = (req as any).user?.userId;
-
-  // Logic: Title bisa dari 'title' atau 'content'
   const finalTitle = title || content;
 
   if (!finalTitle) {
@@ -765,7 +783,6 @@ export const updateLeadMeeting = async (req: Request, res: Response) => {
       return res.status(403).json({ error: 'Access denied to update this meeting' });
     }
 
-    // Cek apakah ada description di dalam meta (untuk backward compatibility)
     let finalDescription = description;
     if (!finalDescription && meta && meta.description) {
         finalDescription = meta.description;
@@ -774,16 +791,24 @@ export const updateLeadMeeting = async (req: Request, res: Response) => {
     const updatedMeeting = await prisma.leadActivity.update({
       where: { id: meetingId },
       data: { 
-        // --- PERBAIKAN DISINI ---
-        title: finalTitle,       // Mapping: 'content' masuk ke 'title'
-        description: finalDescription || '', // Mapping description
-        
-        // Field tambahan (Update jika dikirim frontend)
+        title: finalTitle,
+        description: finalDescription || '',
         location: location,
         scheduledAt: scheduledAt ? new Date(scheduledAt) : undefined,
-        
-        meta: meta, // Meta tetap disimpan full
+        meta: meta,
+
+        // 👇 2. LOGIKA UPDATE ATTENDEES (Pakai 'set' untuk replace)
+        ...(attendees && Array.isArray(attendees) ? {
+            attendees: {
+                set: attendees.map((id: string) => ({ id: id })) 
+            }
+        } : {})
       },
+      // 👇 3. INCLUDE AGAR FRONTEND LANGSUNG UPDATE TANPA REFRESH
+      include: {
+          createdBy: { select: { id: true, name: true, avatar: true } },
+          attendees: { select: { id: true, name: true, avatar: true } }
+      }
     });
 
     res.status(200).json(updatedMeeting);
