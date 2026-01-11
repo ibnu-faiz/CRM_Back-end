@@ -96,9 +96,13 @@ router.get(
   authenticateToken, 
   leadsController.getLeadInvoices
 );
-router.get('/:leadId/invoices/:invoiceId', leadsController.getLeadInvoiceById);
-router.patch('/:leadId/invoices/:invoiceId', leadsController.updateLeadInvoice);
-router.delete('/:leadId/invoices/:invoiceId', leadsController.deleteLeadInvoice);
+router.get('/:leadId/invoices/:invoiceId',
+  authenticateToken,
+   leadsController.getLeadInvoiceById);
+router.patch('/:leadId/invoices/:invoiceId',
+  authenticateToken, leadsController.updateLeadInvoice);
+router.delete('/:leadId/invoices/:invoiceId',
+  authenticateToken, leadsController.deleteLeadInvoice);
 // ---
 
 // 5. Rute dinamis /:id (PALING AKHIR)
