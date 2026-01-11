@@ -15,6 +15,7 @@ export const getAllSalesTeam = async (req: Request, res: Response) => {
         id: true,
         name: true,
         role: true,
+        avatar: true,
       },
       orderBy: { name: 'asc' },
     });
