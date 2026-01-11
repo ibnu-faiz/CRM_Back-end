@@ -1399,6 +1399,7 @@ export const getLeadInvoices = async (req: Request, res: Response) => {
  */
 export const getLeadInvoiceById = async (req: Request, res: Response) => {
   const { leadId, invoiceId } = req.params;
+
   try {
     const invoice = await prisma.leadActivity.findFirst({
       where: {
@@ -1406,13 +1407,28 @@ export const getLeadInvoiceById = async (req: Request, res: Response) => {
         leadId: leadId,
         type: ActivityType.INVOICE,
       },
+      // 👇 TAMBAHAN PENTING: Sertakan data user pembuat
+      include: {
+        createdBy: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            avatar: true // Pastikan ini ada jika frontend butuh avatar
+          }
+        }
+      }
     });
 
     if (!invoice) {
       return res.status(404).json({ error: 'Invoice not found' });
     }
+
     res.status(200).json(invoice);
   } catch (error) {
+    // 👇 TAMBAHAN PENTING: Log error ke terminal agar tahu salahnya dimana
+    console.error("Error fetching invoice detail:", error); 
+    
     res.status(500).json({ error: 'Failed to fetch invoice' });
   }
 };
