@@ -682,6 +682,7 @@ export const getDashboardSchedule = async (req: Request, res: Response): Promise
           select: {
             id: true,
             company: true,  
+            title: true,
             contacts: true,
             isArchived: true,
             status: true,
