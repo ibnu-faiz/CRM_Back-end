@@ -1487,6 +1487,7 @@ export const updateLeadInvoice = async (req: Request, res: Response) => {
       data: { 
         title: finalTitle,
         meta: updatedMeta, 
+        updatedAt: new Date(),
       },
       // [PERBAIKAN 1]: Include Lead & AssignedUsers agar kita tahu notif dikirim ke siapa
       include: {
