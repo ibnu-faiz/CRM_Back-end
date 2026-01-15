@@ -161,6 +161,8 @@ model LeadActivity {
   
   createdAt DateTime      @default(now())
 
+  updatedAt   DateTime @updatedAt @default(now())
+
   // Relasi ke Lead
   leadId    String
   lead      Lead          @relation("LeadActivities", fields: [leadId], references: [id], onDelete: Cascade)
