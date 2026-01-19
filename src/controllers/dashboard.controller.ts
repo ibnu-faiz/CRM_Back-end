@@ -616,7 +616,7 @@ export const getDashboardSchedule = async (req: Request, res: Response): Promise
       
       // LOGIC COMBINATION (OR)
       OR: [
-        // A. ACTIVITY BIASA (Meeting, Call, Task)
+        // A. ACTIVITY BIASA (Meeting, Call, Task)  
         // Ambil yang jadwalnya HARI INI atau MASA DEPAN.
         // Activity masa lalu yang lupa di-close TIDAK dimunculkan agar dashboard bersih.
         { 

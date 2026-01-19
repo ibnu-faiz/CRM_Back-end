@@ -413,48 +413,63 @@ export const getLeadNotes = async (req: Request, res: Response) => {
  * Membuat NOTE baru
  */
 export const createLeadNote = async (req: Request, res: Response) => {
-  console.log('BACKEND_URL:', process.env.BACKEND_URL);
-
   const { leadId } = req.params;
-  const { content } = req.body; // Data dari frontend tetap bernama 'content'
+  
+  // 1. AMBIL TITLE DARI BODY
+  // req.body.meta mungkin berupa string JSON jika dikirim via FormData, jadi perlu di-parse hati-hati
+  let { content, title, meta: metaString } = req.body; 
+  
   const file = req.file; 
   const userId = (req as any).user?.userId;
 
-  if (!userId) {
-     return res.status(401).json({ error: 'Unauthorized' });
-  }
-  if (!content) {
-     return res.status(400).json({ error: 'Content is required' });
-  }
+  if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+  if (!content) return res.status(400).json({ error: 'Content is required' });
   
+  // 2. SETUP META
+  // Jika frontend mengirim meta (misal title di dalam meta), kita parse dulu
   let meta: any = {};
+  if (metaString) {
+    try {
+      meta = JSON.parse(metaString);
+    } catch (e) {
+      meta = {}; 
+    }
+  }
 
+  // Masukkan logic File ke dalam meta
   if (file) {
     const filePath = file.path.replace(/\\/g, '/');
     meta.attachmentUrl = `${process.env.BACKEND_URL}/${filePath}`;
     meta.attachmentPath = filePath; 
   }
 
+  // Pastikan Title terisi (Fallback ke 'Note' jika kosong)
+  const finalTitle = title || meta.title || 'Note';
+
   try {
     const newNote = await prisma.leadActivity.create({
       data: {
         leadId: leadId,
         createdById: userId,
-        type: ActivityType.NOTE, // Pastikan ActivityType diimport
-
-        // --- PERBAIKAN DISINI ---
-        description: content, // Mapping: Variabel 'content' masuk ke kolom 'description'
-        title: 'Note',        // Kita beri judul default karena kolom 'title' wajib/ada di schema baru
+        type: ActivityType.NOTE,
         
-        meta: meta,
+        description: content,
         
-        // Opsional: Set scheduledAt ke waktu sekarang agar muncul di log activity
+        // 3. GUNAKAN TITLE DARI USER (JANGAN HARDCODE)
+        title: finalTitle, 
+        
+        // Simpan meta yang sudah digabung
+        meta: {
+            ...meta,
+            title: finalTitle // Simpan juga di meta biar aman (redundansi)
+        },
+        
         scheduledAt: new Date() 
       },
     });
     res.status(201).json(newNote);
   } catch (error) {
-    console.error("Create Note Error:", error); // Log error biar gampang debug
+    console.error("Create Note Error:", error);
     res.status(500).json({ error: 'Failed to create note' });
   }
 };
@@ -584,7 +599,10 @@ export const getLeadNoteById = async (req: Request, res: Response) => {
  */
 export const updateLeadNote = async (req: Request, res: Response) => {
   const { leadId, noteId } = req.params;
-  const { content, removeAttachment } = req.body; // 'content' dari frontend
+  
+  // 1. AMBIL TITLE
+  const { content, title, removeAttachment } = req.body; 
+  
   const file = req.file;
   const userId = (req as any).user?.userId;
 
@@ -597,45 +615,46 @@ export const updateLeadNote = async (req: Request, res: Response) => {
       where: { id: noteId, leadId: leadId },
     });
     
-    if (!noteToUpdate) { 
-      return res.status(404).json({ error: 'Note not found' }); 
-    }
+    if (!noteToUpdate) return res.status(404).json({ error: 'Note not found' });
     
-    // Cek Permission: Hanya pembuat atau ADMIN yang boleh edit
     if (noteToUpdate.createdById !== userId && (req as any).user?.role !== 'ADMIN') {
       return res.status(403).json({ error: 'Forbidden' });
     }
 
-    // Ambil meta yang ada
+    // Ambil meta lama
     let meta = (noteToUpdate.meta as any) || {};
     const oldPath = meta.attachmentPath;
 
-    // --- LOGIKA FILE BARU ---
+    // Logic File (Sama seperti sebelumnya)
     if (file) {
-      // 1. Hapus file lama jika ada
       if (oldPath) {
-        try { await fs.unlink(path.resolve(oldPath)); } catch (e) { console.warn("Failed to delete old file:", oldPath); }
+        try { await fs.unlink(path.resolve(oldPath)); } catch (e) {}
       }
-      // 2. Set file baru
       const filePath = file.path.replace(/\\/g, '/');
       meta.attachmentUrl = `${process.env.BACKEND_URL}/${filePath}`;
       meta.attachmentPath = filePath;
     } 
     else if (removeAttachment === 'true') {
-      // 3. Hapus file jika user menekan 'x'
       if (oldPath) {
-        try { await fs.unlink(path.resolve(oldPath)); } catch (e) { console.warn("Failed to delete old file:", oldPath); }
+        try { await fs.unlink(path.resolve(oldPath)); } catch (e) {}
       }
-      meta.attachmentUrl = null;
-      meta.attachmentPath = null;
+      delete meta.attachmentUrl; // Gunakan delete agar property hilang
+      delete meta.attachmentPath;
+    }
+
+    // 2. UPDATE META TITLE (Jika title berubah)
+    if (title) {
+        meta.title = title;
     }
 
     const updatedNote = await prisma.leadActivity.update({
       where: { id: noteId },
       data: { 
-        // --- PERBAIKAN DISINI ---
-        description: content, // Mapping: 'content' masuk ke 'description'
-        // Kolom 'content' dihapus dari sini karena sudah tidak ada di DB
+        description: content,
+        
+        // 3. UPDATE KOLOM TITLE
+        // Jika user tidak kirim title baru, pakai title lama
+        title: title || noteToUpdate.title, 
         
         meta: meta, 
       },
