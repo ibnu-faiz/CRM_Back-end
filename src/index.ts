@@ -15,6 +15,7 @@ import globalSearchRoutes from './routes/globalSearch.routes';
 import notificationRoutes from './routes/notification.routes';
 import profileRoutes from './routes/profile.routes';
 import reportRoutes from './routes/report.routes';
+import settingRoutes from './routes/setting.routes';
 
 dotenv.config();
 
@@ -84,6 +85,7 @@ app.use('/api/global-search', globalSearchRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/profile', profileRoutes);
 app.use('/api/reports', reportRoutes);
+app.use("/api/settings", settingRoutes);
 
 // =======================================================================
 // 5. GLOBAL ERROR HANDLER (JARING PENGAMAN TERAKHIR)
