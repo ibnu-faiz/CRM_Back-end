@@ -189,3 +189,13 @@ model Notification {
   
   createdAt DateTime @default(now())
 }
+
+model InvoiceSetting {
+  id             String @id @default("default_config") // ID tetap 1, karena cuma butuh 1 baris setting
+  companyName    String?
+  companyAddress String? @db.Text // @db.Text biar bisa panjang
+  companyEmail   String?
+  defaultTax     Float  @default(10)
+
+  updatedAt      DateTime @updatedAt
+}
