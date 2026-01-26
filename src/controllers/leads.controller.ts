@@ -278,21 +278,33 @@ export const updateLead = async (req: Request, res: Response): Promise<void> => 
 export const deleteLead = async (req: Request, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
+    // @ts-ignore
+    const userId = req.user?.userId;
+    // @ts-ignore
+    const userRole = req.user?.role;
 
-    // (Logika Admin sudah benar, tidak perlu otorisasi sales)
-    if (req.user?.role !== 'ADMIN') {
-      res.status(403).json({ error: 'Only admins can delete leads' });
-      return;
-    }
-
+    // 1. Cari dulu Lead-nya
     const lead = await prisma.lead.findUnique({ where: { id } });
+
     if (!lead) {
       res.status(404).json({ error: 'Lead not found' });
       return;
     }
 
+    // 2. 🔥 LOGIC BARU: Izinkan jika dia ADMIN --ATAU-- dia CREATOR
+    const isCreator = lead.createdById === userId;
+    const isAdmin = userRole === 'ADMIN';
+
+    if (!isCreator && !isAdmin) {
+      // Ini pesan yang nanti akan muncul di Toast Frontend
+      res.status(403).json({ error: 'Permission denied. Only the creator or Admin can delete this lead.' });
+      return;
+    }
+
+    // 3. Hapus
     await prisma.lead.delete({ where: { id } });
     res.status(200).json({ message: 'Lead deleted successfully' });
+
   } catch (error) {
     console.error('Delete lead error:', error);
     res.status(500).json({ error: 'Internal server error' });
