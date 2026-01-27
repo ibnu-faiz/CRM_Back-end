@@ -270,7 +270,8 @@ export const getProfile = async (req: Request, res: Response): Promise<void> => 
             id: true,
             title: true,
             status: true,
-            company: true
+            company: true,
+            value: true,
           }
         }
       },
