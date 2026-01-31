@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { register, login, getProfile, updateProfile, changePassword } from '../controllers/auth.controller';
+import { register, login, } from '../controllers/auth.controller';
 import { authenticateToken } from '../middleware/auth.middleware';
 import * as authController from '../controllers/auth.controller';
 
@@ -8,8 +8,8 @@ const router = Router();
 router.post('/register', register);
 router.post('/login', login);
 
-router.get('/profile', authenticateToken, getProfile);
-router.patch('/profile', authenticateToken, updateProfile);
+router.get('/profile', authenticateToken, authController.getProfile);
+router.patch('/profile', authenticateToken, authController.updateProfile);
 
 
 router.post('/google-login', authController.googleLogin);         // Khusus Login page
