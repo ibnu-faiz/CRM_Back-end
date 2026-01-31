@@ -3,120 +3,90 @@ import prisma from '../config/database';
 
 export const getDashboardStats = async (req: Request, res: Response): Promise<void> => {
   try {
-    // 1. CEK USER DATA & VALIDASI
+    // 1. CEK USER
     // @ts-ignore
     const user = req.user; 
-    
     // @ts-ignore
     const userId = user?.userId || user?.id || user?.sub;
     // @ts-ignore
     const userRole = user?.role;
 
-    // Validasi Session Sales
-    if (userRole === 'SALES' && !userId) {
-       console.error(`[DashboardStats] Unauthorized access attempt by SALES role without ID.`);
-       res.status(401).json({ error: "Invalid User Session: Missing ID" });
-       return;
-    }
-    
-    // 2. SETUP PARAMETER WAKTU (DINAMIS / CONTEXT SWITCHER)
-    // Kita ambil parameter 'month' dan 'year' dari frontend
+    // 2. AMBIL FILTER DARI URL
     const { range, month, year } = req.query; 
     const isAllTime = range === 'all';
-
     const now = new Date();
     
-    // Tentukan Tahun & Bulan Target
-    // Jika user kirim filter, pakai itu. Jika tidak, pakai waktu sekarang.
+    // Default Tahun & Bulan
     const targetYear = year ? Number(year) : now.getFullYear();
-    const targetMonth = month ? Number(month) : now.getMonth(); // 0 = Jan, 11 = Des
+    // ⚠️ HATI-HATI DISINI: Javascript hitung bulan dari 0 (Jan=0, Feb=1)
+    const targetMonth = (month !== undefined) ? Number(month) : now.getMonth();
 
     let startDate: Date | undefined; 
     let endDate: Date | undefined; 
-    
     let prevStartDate: Date | undefined;
     let prevEndDate: Date | undefined;
 
     if (!isAllTime) {
-        // PERIODE UTAMA (Selected Month)
-        // Tgl 1 bulan target
+        // PERIODE UTAMA
         startDate = new Date(targetYear, targetMonth, 1);
-        // Tgl terakhir bulan target (trik: tanggal 0 bulan berikutnya)
-        endDate = new Date(targetYear, targetMonth + 1, 0);
+        // FIX: Set ke DETIK TERAKHIR bulan tersebut (23:59:59)
+        endDate = new Date(targetYear, targetMonth + 1, 0, 23, 59, 59, 999); 
 
-        // PERIODE PEMBANDING (Previous Month)
-        // Javascript otomatis handle rollover tahun (misal Jan mundur jadi Des tahun lalu)
+        // PERIODE PEMBANDING (Bulan Lalu)
         prevStartDate = new Date(targetYear, targetMonth - 1, 1);
-        prevEndDate = new Date(targetYear, targetMonth, 0);
-    } else {
-        // Logic All Time
-        startDate = undefined; 
-        prevStartDate = undefined; 
+        prevEndDate = new Date(targetYear, targetMonth, 0, 23, 59, 59, 999);
+
+        // 🔥 LOGGING UNTUK VERCEL (Cek ini di Tab "Logs" Vercel!)
+        console.log("------------------------------------------------");
+        console.log("🔍 DEBUG DASHBOARD STATS:");
+        console.log(`👉 Input dari Frontend: Month=${month}, Year=${year}`);
+        console.log(`👉 Backend Mencari: ${startDate.toLocaleString()} s/d ${endDate.toLocaleString()}`);
+        console.log("------------------------------------------------");
     }
 
-    // 3. SETUP FILTER QUERY
+    // 3. FILTER QUERY
     const baseFilter = (sDate: Date | undefined, eDate: Date | undefined) => {
         let condition: any = { isArchived: false };
-        
-        // Filter by Created Date (Inflow Metrics)
         if (sDate && eDate) {
             condition.createdAt = { gte: sDate, lte: eDate };
         }
-
-        // Filter by Sales Role
+        // Filter Sales
         if (userRole === 'SALES') {
             condition.assignedUsers = {
-                some: {
-                    // Handle ID baik berupa Number maupun String (UUID)
-                    id: !isNaN(Number(userId)) ? Number(userId) : userId
-                }
+                some: { id: !isNaN(Number(userId)) ? Number(userId) : userId }
             };
         }
-
         return condition;
     };
 
     const currentFilter = baseFilter(startDate, endDate);
     const prevFilter = baseFilter(prevStartDate, prevEndDate);
 
-    // 4. EKSEKUSI DATABASE (PARALLEL)
+    // 4. EKSEKUSI DATABASE
     const [
         currPipeline, prevPipeline,
         currWon, prevWon,
         currLost, prevLost,
         currTotal, prevTotal
     ] = await Promise.all([
-        // A. Pipeline Inflow (Menghitung semua lead baru di bulan terpilih)
-        prisma.lead.aggregate({
-            _sum: { value: true },
-            _count: { id: true },
-            where: currentFilter 
-        }),
-        prisma.lead.aggregate({
-            _sum: { value: true },
-            _count: { id: true },
-            where: prevFilter 
-        }),
-
-        // B. Metrics Row (Won, Lost, Total)
+        prisma.lead.aggregate({ _sum: { value: true }, _count: { id: true }, where: currentFilter }),
+        prisma.lead.aggregate({ _sum: { value: true }, _count: { id: true }, where: prevFilter }),
         prisma.lead.count({ where: { ...currentFilter, status: 'WON' } }),
         prisma.lead.count({ where: { ...prevFilter, status: 'WON' } }),
-
         prisma.lead.count({ where: { ...currentFilter, status: 'LOST' } }),
         prisma.lead.count({ where: { ...prevFilter, status: 'LOST' } }),
-
         prisma.lead.count({ where: currentFilter }),
         prisma.lead.count({ where: prevFilter }),
     ]);
 
-    // 5. KALKULASI PERSENTASE
+    // 5. HELPER % CHANGE
     const calculateChange = (current: number, last: number) => {
         if (isAllTime) return 0;
         if (last === 0) return current > 0 ? 100 : 0;
         return Math.round(((current - last) / last) * 100);
     };
 
-    // 6. OLAH DATA STATS
+    // 6. FORMAT DATA
     const statsPipelineValue = Number(currPipeline._sum.value) || 0;
     const statsTotalNewLeads = Number(currPipeline._count.id) || 0;
     const statsAvgDeal = statsTotalNewLeads > 0 ? Math.round(statsPipelineValue / statsTotalNewLeads) : 0;
@@ -128,9 +98,7 @@ export const getDashboardStats = async (req: Request, res: Response): Promise<vo
     const currConversionRate = currTotal > 0 ? Math.round((currWon / currTotal) * 100) : 0;
     const prevConversionRate = prevTotal > 0 ? Math.round((prevWon / prevTotal) * 100) : 0;
 
-    // 7. RESPONSE JSON
     res.json({
-      // Big Stats Cards
       pipelineValue: {
         value: statsPipelineValue,
         change: calculateChange(statsPipelineValue, prevPipelineValue),
@@ -146,33 +114,16 @@ export const getDashboardStats = async (req: Request, res: Response): Promise<vo
         change: calculateChange(statsAvgDeal, prevAvgDeal),
         isPositive: calculateChange(statsAvgDeal, prevAvgDeal) >= 0
       },
-      // Detailed Metrics
       metrics: {
-        totalWon: {
-            value: currWon,
-            change: calculateChange(currWon, prevWon),
-            isPositive: calculateChange(currWon, prevWon) >= 0
-        },
-        totalLost: {
-            value: currLost,
-            change: calculateChange(currLost, prevLost),
-            isPositive: false 
-        },
-        totalLeads: {
-            value: currTotal,
-            change: calculateChange(currTotal, prevTotal),
-            isPositive: calculateChange(currTotal, prevTotal) >= 0
-        },
-        conversionRate: { 
-            value: currConversionRate, 
-            change: calculateChange(currConversionRate, prevConversionRate),
-            isPositive: calculateChange(currConversionRate, prevConversionRate) >= 0
-        }
+        totalWon: { value: currWon, change: calculateChange(currWon, prevWon), isPositive: calculateChange(currWon, prevWon) >= 0 },
+        totalLost: { value: currLost, change: calculateChange(currLost, prevLost), isPositive: false },
+        totalLeads: { value: currTotal, change: calculateChange(currTotal, prevTotal), isPositive: calculateChange(currTotal, prevTotal) >= 0 },
+        conversionRate: { value: currConversionRate, change: calculateChange(currConversionRate, prevConversionRate), isPositive: calculateChange(currConversionRate, prevConversionRate) >= 0 }
       }
     });
 
   } catch (error) {
-    console.error("[DashboardStats] Internal Server Error:", error);
+    console.error("[DashboardStats] Error:", error);
     res.status(500).json({ error: "Internal Server Error" });
   }
 };
