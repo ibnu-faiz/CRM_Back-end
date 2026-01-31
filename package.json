@@ -20,6 +20,7 @@
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
     "@prisma/client": "^6.18.0",
+    "prisma": "^6.18.0",
     "@types/nodemailer": "^7.0.4",
     "axios": "^1.13.2",
     "bcrypt": "^6.0.0",
