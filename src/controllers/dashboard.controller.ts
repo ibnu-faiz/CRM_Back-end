@@ -1,9 +1,14 @@
 import { Request, Response } from 'express';
 import prisma from '../config/database';
 
+const getWIBDate = (year: number, month: number, day: number, hours = 0, minutes = 0, seconds = 0, ms = 0) => {
+    const date = new Date(year, month, day, hours, minutes, seconds, ms);
+    date.setHours(date.getHours() - 7); // Offset -7 Jam
+    return date;
+};
+
 export const getDashboardStats = async (req: Request, res: Response): Promise<void> => {
   try {
-    // 1. CEK USER DATA & VALIDASI
     // @ts-ignore
     const user = req.user; 
     // @ts-ignore
@@ -16,13 +21,11 @@ export const getDashboardStats = async (req: Request, res: Response): Promise<vo
        return;
     }
     
-    // 2. SETUP PARAMETER WAKTU
     const { range, month, year } = req.query; 
     const isAllTime = range === 'all';
     const now = new Date();
     
     const targetYear = year ? Number(year) : now.getFullYear();
-    // Default JS Month (0=Jan, 1=Feb)
     const targetMonth = (month !== undefined && month !== null) ? Number(month) : now.getMonth();
 
     let startDate: Date | undefined; 
@@ -31,42 +34,26 @@ export const getDashboardStats = async (req: Request, res: Response): Promise<vo
     let prevEndDate: Date | undefined;
 
     if (!isAllTime) {
-        // PERIODE UTAMA
-        startDate = new Date(targetYear, targetMonth, 1);
-        // FIX: Set ke DETIK TERAKHIR bulan tersebut (23:59:59.999)
-        endDate = new Date(targetYear, targetMonth + 1, 0, 23, 59, 59, 999); 
+        // PERIODE UTAMA (Pakai Helper WIB)
+        startDate = getWIBDate(targetYear, targetMonth, 1);
+        endDate = getWIBDate(targetYear, targetMonth + 1, 0, 23, 59, 59, 999);
 
-        // PERIODE PEMBANDING (Bulan Sebelumnya)
-        prevStartDate = new Date(targetYear, targetMonth - 1, 1);
-        prevEndDate = new Date(targetYear, targetMonth, 0, 23, 59, 59, 999); 
+        // PERIODE PEMBANDING
+        prevStartDate = getWIBDate(targetYear, targetMonth - 1, 1);
+        prevEndDate = getWIBDate(targetYear, targetMonth, 0, 23, 59, 59, 999);
     }
 
-    // 3. SETUP FILTER QUERY
     const baseFilter = (sDate: Date | undefined, eDate: Date | undefined) => {
         let condition: any = { isArchived: false };
-        
-        if (sDate && eDate) {
-            condition.createdAt = { gte: sDate, lte: eDate };
-        }
-
-        if (userRole === 'SALES') {
-            condition.assignedUsers = {
-                some: { id: !isNaN(Number(userId)) ? Number(userId) : userId }
-            };
-        }
+        if (sDate && eDate) condition.createdAt = { gte: sDate, lte: eDate };
+        if (userRole === 'SALES') condition.assignedUsers = { some: { id: !isNaN(Number(userId)) ? Number(userId) : userId } };
         return condition;
     };
 
     const currentFilter = baseFilter(startDate, endDate);
     const prevFilter = baseFilter(prevStartDate, prevEndDate);
 
-    // 4. EKSEKUSI DATABASE
-    const [
-        currPipeline, prevPipeline,
-        currWon, prevWon,
-        currLost, prevLost,
-        currTotal, prevTotal
-    ] = await Promise.all([
+    const [currPipeline, prevPipeline, currWon, prevWon, currLost, prevLost, currTotal, prevTotal] = await Promise.all([
         prisma.lead.aggregate({ _sum: { value: true }, _count: { id: true }, where: currentFilter }),
         prisma.lead.aggregate({ _sum: { value: true }, _count: { id: true }, where: prevFilter }),
         prisma.lead.count({ where: { ...currentFilter, status: 'WON' } }),
@@ -77,42 +64,25 @@ export const getDashboardStats = async (req: Request, res: Response): Promise<vo
         prisma.lead.count({ where: prevFilter }),
     ]);
 
-    // 5. HELPER KALKULASI
     const calculateChange = (current: number, last: number) => {
         if (isAllTime) return 0;
         if (last === 0) return current > 0 ? 100 : 0;
         return Math.round(((current - last) / last) * 100);
     };
 
-    // 6. OLAH DATA
     const statsPipelineValue = Number(currPipeline._sum.value) || 0;
     const statsTotalNewLeads = Number(currPipeline._count.id) || 0;
     const statsAvgDeal = statsTotalNewLeads > 0 ? Math.round(statsPipelineValue / statsTotalNewLeads) : 0;
-
     const prevPipelineValue = Number(prevPipeline._sum.value) || 0;
     const prevTotalNewLeads = Number(prevPipeline._count.id) || 0;
     const prevAvgDeal = prevTotalNewLeads > 0 ? Math.round(prevPipelineValue / prevTotalNewLeads) : 0;
-
     const currConversionRate = currTotal > 0 ? Math.round((currWon / currTotal) * 100) : 0;
     const prevConversionRate = prevTotal > 0 ? Math.round((prevWon / prevTotal) * 100) : 0;
 
-    // 7. RESPONSE
     res.json({
-      pipelineValue: {
-        value: statsPipelineValue,
-        change: calculateChange(statsPipelineValue, prevPipelineValue),
-        isPositive: calculateChange(statsPipelineValue, prevPipelineValue) >= 0
-      },
-      activeDeals: {
-        value: statsTotalNewLeads, 
-        change: calculateChange(statsTotalNewLeads, prevTotalNewLeads),
-        isPositive: calculateChange(statsTotalNewLeads, prevTotalNewLeads) >= 0
-      },
-      avgDeal: {
-        value: statsAvgDeal,
-        change: calculateChange(statsAvgDeal, prevAvgDeal),
-        isPositive: calculateChange(statsAvgDeal, prevAvgDeal) >= 0
-      },
+      pipelineValue: { value: statsPipelineValue, change: calculateChange(statsPipelineValue, prevPipelineValue), isPositive: calculateChange(statsPipelineValue, prevPipelineValue) >= 0 },
+      activeDeals: { value: statsTotalNewLeads, change: calculateChange(statsTotalNewLeads, prevTotalNewLeads), isPositive: calculateChange(statsTotalNewLeads, prevTotalNewLeads) >= 0 },
+      avgDeal: { value: statsAvgDeal, change: calculateChange(statsAvgDeal, prevAvgDeal), isPositive: calculateChange(statsAvgDeal, prevAvgDeal) >= 0 },
       metrics: {
         totalWon: { value: currWon, change: calculateChange(currWon, prevWon), isPositive: calculateChange(currWon, prevWon) >= 0 },
         totalLost: { value: currLost, change: calculateChange(currLost, prevLost), isPositive: false },
@@ -129,7 +99,6 @@ export const getDashboardStats = async (req: Request, res: Response): Promise<vo
 
 export const getLeadsChart = async (req: Request, res: Response): Promise<void> => {
   try {
-    // 1. CEK USER DATA (Logic Robust yang sama dengan getDashboardStats)
     // @ts-ignore
     const user = req.user;
     // @ts-ignore
@@ -137,60 +106,40 @@ export const getLeadsChart = async (req: Request, res: Response): Promise<void> 
     // @ts-ignore
     const userRole = user?.role;
 
-    // 2. SETUP PARAMETER WAKTU (YEARLY CONTEXT)
-    // Ambil parameter 'year' saja. Abaikan 'month'.
     const { year } = req.query;
-    
     const now = new Date();
-    // Jika user kirim tahun, pakai itu. Jika tidak, pakai tahun ini.
     const targetYear = year ? Number(year) : now.getFullYear();
 
-    // Tentukan Range: 1 Jan 00:00 s/d 31 Des 23:59 pada tahun target
-    const startOfYear = new Date(targetYear, 0, 1);
-    const endOfYear = new Date(targetYear, 11, 31, 23, 59, 59);
+    // 🔥 FIX: Pakai Helper WIB
+    // Mulai: 1 Jan 00:00 (Mundur 7 jam)
+    const startOfYear = getWIBDate(targetYear, 0, 1);
+    // Akhir: 31 Des 23:59 (Mundur 7 jam)
+    const endOfYear = getWIBDate(targetYear, 11, 31, 23, 59, 59, 999);
 
-    // 3. FILTER QUERY
     const whereCondition: any = {
       isArchived: false,
-      createdAt: {
-        gte: startOfYear,
-        lte: endOfYear,
-      },
+      createdAt: { gte: startOfYear, lte: endOfYear },
     };
 
-    // Filter Sales (Safe ID Check)
     if (userRole === 'SALES') {
-        whereCondition.assignedUsers = {
-          some: {
-             id: !isNaN(Number(userId)) ? Number(userId) : userId
-          }
-        };
+        whereCondition.assignedUsers = { some: { id: !isNaN(Number(userId)) ? Number(userId) : userId } };
     }
 
-    // 4. AMBIL DATA DARI DB
     const leads = await prisma.lead.findMany({
       where: whereCondition,
-      select: { createdAt: true }, // Kita cuma butuh tanggalnya untuk grouping
+      select: { createdAt: true },
     });
 
-    // 5. PROSES GROUPING BY MONTH
-    // Inisialisasi array 12 bulan
-    const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-    ];
-    
-    // Siapkan wadah data awal (semua 0)
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     const chartData = months.map(month => ({ name: month, total: 0 }));
 
-    // Looping data leads dan masukkan ke keranjang bulan yang sesuai
     leads.forEach(lead => {
-      // Pastikan tanggal lead dibaca sebagai object Date
-      const date = new Date(lead.createdAt);
-      // Ambil index bulan (0-11)
-      const monthIndex = date.getMonth();
+      // 🔥 FIX LOGIC: Tambah 7 Jam dulu sebelum cek bulan
+      // Agar "31 Jan 18:00 UTC" terbaca "1 Feb 01:00 WIB"
+      const dateUTC = new Date(lead.createdAt);
+      const dateWIB = new Date(dateUTC.getTime() + (7 * 60 * 60 * 1000)); 
       
-      // Safety check: pastikan index valid
+      const monthIndex = dateWIB.getMonth();
       if (chartData[monthIndex]) {
           chartData[monthIndex].total += 1;
       }
@@ -206,7 +155,6 @@ export const getLeadsChart = async (req: Request, res: Response): Promise<void> 
 
 export const getRevenueChart = async (req: Request, res: Response): Promise<void> => {
   try {
-    // 1. CEK USER DATA
     // @ts-ignore
     const user = req.user;
     // @ts-ignore
@@ -214,64 +162,45 @@ export const getRevenueChart = async (req: Request, res: Response): Promise<void
     // @ts-ignore
     const userRole = user?.role;
 
-    // 2. SETUP TAHUN
     const { year } = req.query;
     const targetYear = year ? Number(year) : new Date().getFullYear();
-
-    // 3. ARRAY 12 BULAN (0-11)
     const months = Array.from({ length: 12 }, (_, i) => i);
 
-    // 4. SIAPKAN FILTER USER (Agar bisa dipakai berulang)
     const userFilter: any = {};
     if (userRole === 'SALES') {
-      userFilter.assignedUsers = {
-        some: {
-          id: !isNaN(Number(userId)) ? Number(userId) : userId
-        }
-      };
+      userFilter.assignedUsers = { some: { id: !isNaN(Number(userId)) ? Number(userId) : userId } };
     }
 
-    // 5. LOOP QUERY PARALEL (PROMISE ALL)
-    // Kita query database 12x (paralel) agar akurat memisahkan CreatedAt vs WonAt
     const chartData = await Promise.all(
       months.map(async (monthIndex) => {
         
-        // Tentukan Awal & Akhir Bulan
-        const startDate = new Date(targetYear, monthIndex, 1);
-        const endDate = new Date(targetYear, monthIndex + 1, 0, 23, 59, 59, 999);
-        const monthName = startDate.toLocaleString('default', { month: 'short' }); // Jan, Feb...
+        // 🔥 FIX: Pakai Helper WIB untuk range per bulan
+        const startDate = getWIBDate(targetYear, monthIndex, 1);
+        const endDate = getWIBDate(targetYear, monthIndex + 1, 0, 23, 59, 59, 999);
 
-        // --- A. HITUNG ESTIMATION (POTENSI) ---
-        // Logic: Berdasarkan createdAt (Kapan lead masuk).
-        // Syarat: Semua status (Won, Lost, Open) dihitung sebagai Total Opportunity.
+        // Nama Bulan (Untuk label chart)
+        // Kita pakai object Date murni untuk ambil nama bulan biar gak geser
+        const labelDate = new Date(targetYear, monthIndex, 1); 
+        const monthName = labelDate.toLocaleString('default', { month: 'short' }); 
+
+        // ESTIMATION (CreatedAt)
         const estimation = await prisma.lead.aggregate({
           _sum: { value: true },
           where: {
-            ...userFilter,    // Filter User
+            ...userFilter,
             isArchived: false,
-            createdAt: {      // KUNCI: Filter by CreatedAt
-              gte: startDate,
-              lte: endDate
-            }
+            createdAt: { gte: startDate, lte: endDate }
           }
         });
 
-        // --- B. HITUNG REALISATION (UANG MASUK) ---
-        // Logic: Berdasarkan wonAt (Kapan deal terjadi).
-        // Syarat: Status WON.
+        // REALISATION (WonAt)
         const realisation = await prisma.lead.aggregate({
           _sum: { value: true },
           where: {
-            ...userFilter,    // Filter User
-            status: 'WON',    // Wajib WON
+            ...userFilter,
+            status: 'WON',
             isArchived: false,
-            
-            // KUNCI: Filter by WonAt (Bukan CreatedAt)
-            // Pastikan field ini ada. Jika belum ada, pakai updatedAt (dengan risiko)
-            wonAt: {          
-              gte: startDate,
-              lte: endDate
-            }
+            wonAt: { gte: startDate, lte: endDate }
           }
         });
 
