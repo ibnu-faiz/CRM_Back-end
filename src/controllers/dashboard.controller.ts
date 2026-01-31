@@ -3,7 +3,7 @@ import prisma from '../config/database';
 
 export const getDashboardStats = async (req: Request, res: Response): Promise<void> => {
   try {
-    // 1. CEK USER
+    // 1. CEK USER DATA & VALIDASI
     // @ts-ignore
     const user = req.user; 
     // @ts-ignore
@@ -11,15 +11,19 @@ export const getDashboardStats = async (req: Request, res: Response): Promise<vo
     // @ts-ignore
     const userRole = user?.role;
 
-    // 2. AMBIL FILTER DARI URL
+    if (userRole === 'SALES' && !userId) {
+       res.status(401).json({ error: "Invalid User Session: Missing ID" });
+       return;
+    }
+    
+    // 2. SETUP PARAMETER WAKTU
     const { range, month, year } = req.query; 
     const isAllTime = range === 'all';
     const now = new Date();
     
-    // Default Tahun & Bulan
     const targetYear = year ? Number(year) : now.getFullYear();
-    // ⚠️ HATI-HATI DISINI: Javascript hitung bulan dari 0 (Jan=0, Feb=1)
-    const targetMonth = (month !== undefined) ? Number(month) : now.getMonth();
+    // Default JS Month (0=Jan, 1=Feb)
+    const targetMonth = (month !== undefined && month !== null) ? Number(month) : now.getMonth();
 
     let startDate: Date | undefined; 
     let endDate: Date | undefined; 
@@ -29,28 +33,22 @@ export const getDashboardStats = async (req: Request, res: Response): Promise<vo
     if (!isAllTime) {
         // PERIODE UTAMA
         startDate = new Date(targetYear, targetMonth, 1);
-        // FIX: Set ke DETIK TERAKHIR bulan tersebut (23:59:59)
+        // FIX: Set ke DETIK TERAKHIR bulan tersebut (23:59:59.999)
         endDate = new Date(targetYear, targetMonth + 1, 0, 23, 59, 59, 999); 
 
-        // PERIODE PEMBANDING (Bulan Lalu)
+        // PERIODE PEMBANDING (Bulan Sebelumnya)
         prevStartDate = new Date(targetYear, targetMonth - 1, 1);
-        prevEndDate = new Date(targetYear, targetMonth, 0, 23, 59, 59, 999);
-
-        // 🔥 LOGGING UNTUK VERCEL (Cek ini di Tab "Logs" Vercel!)
-        console.log("------------------------------------------------");
-        console.log("🔍 DEBUG DASHBOARD STATS:");
-        console.log(`👉 Input dari Frontend: Month=${month}, Year=${year}`);
-        console.log(`👉 Backend Mencari: ${startDate.toLocaleString()} s/d ${endDate.toLocaleString()}`);
-        console.log("------------------------------------------------");
+        prevEndDate = new Date(targetYear, targetMonth, 0, 23, 59, 59, 999); 
     }
 
-    // 3. FILTER QUERY
+    // 3. SETUP FILTER QUERY
     const baseFilter = (sDate: Date | undefined, eDate: Date | undefined) => {
         let condition: any = { isArchived: false };
+        
         if (sDate && eDate) {
             condition.createdAt = { gte: sDate, lte: eDate };
         }
-        // Filter Sales
+
         if (userRole === 'SALES') {
             condition.assignedUsers = {
                 some: { id: !isNaN(Number(userId)) ? Number(userId) : userId }
@@ -79,14 +77,14 @@ export const getDashboardStats = async (req: Request, res: Response): Promise<vo
         prisma.lead.count({ where: prevFilter }),
     ]);
 
-    // 5. HELPER % CHANGE
+    // 5. HELPER KALKULASI
     const calculateChange = (current: number, last: number) => {
         if (isAllTime) return 0;
         if (last === 0) return current > 0 ? 100 : 0;
         return Math.round(((current - last) / last) * 100);
     };
 
-    // 6. FORMAT DATA
+    // 6. OLAH DATA
     const statsPipelineValue = Number(currPipeline._sum.value) || 0;
     const statsTotalNewLeads = Number(currPipeline._count.id) || 0;
     const statsAvgDeal = statsTotalNewLeads > 0 ? Math.round(statsPipelineValue / statsTotalNewLeads) : 0;
@@ -98,6 +96,7 @@ export const getDashboardStats = async (req: Request, res: Response): Promise<vo
     const currConversionRate = currTotal > 0 ? Math.round((currWon / currTotal) * 100) : 0;
     const prevConversionRate = prevTotal > 0 ? Math.round((prevWon / prevTotal) * 100) : 0;
 
+    // 7. RESPONSE
     res.json({
       pipelineValue: {
         value: statsPipelineValue,
