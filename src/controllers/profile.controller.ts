@@ -1,11 +1,10 @@
 import { Request, Response } from 'express';
 import prisma from '../config/database';
-import fs from 'fs';
-import path from 'path';
+import { deleteFileFromCloudinary } from '../utils/cloudinary';
 
 export const getMyProfile = async (req: Request, res: Response) => {
   try {
-    const userId = req.user?.userId; // Dari middleware auth
+    const userId = (req as any).user?.userId; // Casting any biar aman
 
     if (!userId) {
         return res.status(401).json({ error: "Unauthorized" });
@@ -19,7 +18,7 @@ export const getMyProfile = async (req: Request, res: Response) => {
         email: true,
         role: true,
         avatar: true,
-        // Sertakan field preferences ini:
+        // Sertakan field preferences:
         notifyLeadAssign: true,
         notifyLeadUpdate: true,
         notifyInvoice: true,
@@ -46,35 +45,25 @@ export const updateAvatar = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'No image file uploaded' });
     }
 
-    // Ambil ID user dari Token (req.user)
+    // Ambil ID user dari Token
     const userId = (req as any).user.userId;
-
-    // 2. Cari data user lama untuk melihat foto profil sebelumnya
+    
+    // 2. 🔥 CARI AVATAR LAMA DI DATABASE 🔥
+    // Kita butuh URL lama untuk dihapus dari Cloudinary
     const oldUser = await prisma.user.findUnique({ 
         where: { id: userId },
         select: { avatar: true } 
     });
 
-    // 3. LOGIKA HAPUS FOTO LAMA (Clean Up)
+    // 3. 🔥 JIKA ADA AVATAR LAMA, HAPUS DARI CLOUDINARY 🔥
     if (oldUser?.avatar) {
-      // Cek apakah avatar lama adalah file lokal (bukan link google/http)
-      if (!oldUser.avatar.startsWith('http')) {
-        // Susun path lengkap file lama di harddisk
-        // oldUser.avatar isinya misal: "/uploads/avatars/avatar-123.jpg"
-        const oldFilePath = path.join(process.cwd(), 'public', oldUser.avatar);
-
-        // Hapus file jika ada
-        if (fs.existsSync(oldFilePath)) {
-          fs.unlinkSync(oldFilePath); 
-        }
-      }
+        await deleteFileFromCloudinary(oldUser.avatar);
     }
+    
+    // 4. Ambil URL Baru dari Cloudinary
+    const newAvatarUrl = req.file.path; 
 
-    // 4. Susun URL baru untuk disimpan di Database
-    // Hasil: "/uploads/avatars/avatar-1709999.jpg"
-    const newAvatarUrl = `/public/uploads/avatars/${req.file.filename}`;
-
-    // 5. Update Database
+    // 5. Update Database dengan URL Baru
     const updatedUser = await prisma.user.update({
       where: { id: userId },
       data: { avatar: newAvatarUrl },
@@ -88,10 +77,6 @@ export const updateAvatar = async (req: Request, res: Response) => {
 
   } catch (error) {
     console.error("Update Avatar Error:", error);
-    // Jika error DB, hapus file yang barusan terlanjur diupload biar ga nyampah
-    if (req.file) {
-        fs.unlinkSync(req.file.path);
-    }
     res.status(500).json({ error: 'Failed to update avatar' });
   }
 };
@@ -101,37 +86,18 @@ export const deleteAvatar = async (req: Request, res: Response) => {
     const userId = (req as any).user?.userId;
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
+    // 1. 🔥 AMBIL DATA USER UNTUK DAPAT URL AVATAR 🔥
     const user = await prisma.user.findUnique({
       where: { id: userId },
       select: { avatar: true },
     });
 
-    if (!user) return res.status(404).json({ error: "User not found" });
-
-    // --- LOGIKA HAPUS YANG DIPERBAIKI ---
-    if (user.avatar && !user.avatar.startsWith('http')) {
-      
-      // 1. Bersihkan path dari database
-      // Hapus slash awal '/' agar path.join bekerja dengan benar dari root project
-      // Jika di DB: "/public/uploads/..." -> jadi "public/uploads/..."
-      const cleanDbPath = user.avatar.startsWith('/') ? user.avatar.slice(1) : user.avatar;
-      
-      // 2. Gabungkan dengan Root Project
-      // Hasil: C:/Project/public/uploads/avatars/file.jpg
-      const filePath = path.join(process.cwd(), cleanDbPath);
-
-      // DEBUGGING: Cek di console server path mana yang sedang dihapus
-      console.log("Mencoba menghapus file di:", filePath); 
-
-      if (fs.existsSync(filePath)) {
-         fs.unlinkSync(filePath);
-         console.log("File berhasil dihapus dari server.");
-      } else {
-         console.log("File tidak ditemukan, skip delete.");
-      }
+    // 2. 🔥 HAPUS FILE DI CLOUDINARY (JIKA ADA) 🔥
+    if (user?.avatar) {
+       await deleteFileFromCloudinary(user.avatar);
     }
-    // ------------------------------------
 
+    // 3. Update Database (Set NULL)
     const updatedUser = await prisma.user.update({
       where: { id: userId },
       data: { avatar: null },
@@ -145,4 +111,3 @@ export const deleteAvatar = async (req: Request, res: Response) => {
     res.status(500).json({ error: "Failed to delete avatar" });
   }
 };
-

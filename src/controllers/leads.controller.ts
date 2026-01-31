@@ -6,6 +6,7 @@ import path from 'path';
 import { sendCRMEmail } from '../utils/email';
 import { generateInvoiceNumber } from '../utils/invoiceGenerator';
 import { sendNotification } from '../utils/notification';
+import { deleteFileFromCloudinary } from '../utils/cloudinary';
 
 const formatStatus = (status: string) => {
   if (!status) return "";
@@ -427,35 +428,32 @@ export const getLeadNotes = async (req: Request, res: Response) => {
 export const createLeadNote = async (req: Request, res: Response) => {
   const { leadId } = req.params;
   
-  // 1. AMBIL TITLE DARI BODY
-  // req.body.meta mungkin berupa string JSON jika dikirim via FormData, jadi perlu di-parse hati-hati
+  // Ambil data dari body
   let { content, title, meta: metaString } = req.body; 
-  
   const file = req.file; 
   const userId = (req as any).user?.userId;
 
   if (!userId) return res.status(401).json({ error: 'Unauthorized' });
   if (!content) return res.status(400).json({ error: 'Content is required' });
   
-  // 2. SETUP META
-  // Jika frontend mengirim meta (misal title di dalam meta), kita parse dulu
+  // A. Parse Meta (Karena FormData mengirim object sebagai string)
   let meta: any = {};
   if (metaString) {
     try {
-      meta = JSON.parse(metaString);
+      meta = typeof metaString === 'string' ? JSON.parse(metaString) : metaString;
     } catch (e) {
       meta = {}; 
     }
   }
 
-  // Masukkan logic File ke dalam meta
+  // B. Logic File Cloudinary
+  // req.file.path SUDAH berupa URL lengkap (https://res.cloudinary...)
   if (file) {
-    const filePath = file.path.replace(/\\/g, '/');
-    meta.attachmentUrl = `${process.env.BACKEND_URL}/${filePath}`;
-    meta.attachmentPath = filePath; 
+    meta.attachmentUrl = file.path; 
+    meta.attachmentName = file.originalname; // Simpan nama asli file untuk display
   }
 
-  // Pastikan Title terisi (Fallback ke 'Note' jika kosong)
+  // Fallback title
   const finalTitle = title || meta.title || 'Note';
 
   try {
@@ -464,20 +462,17 @@ export const createLeadNote = async (req: Request, res: Response) => {
         leadId: leadId,
         createdById: userId,
         type: ActivityType.NOTE,
-        
         description: content,
-        
-        // 3. GUNAKAN TITLE DARI USER (JANGAN HARDCODE)
         title: finalTitle, 
-        
-        // Simpan meta yang sudah digabung
         meta: {
             ...meta,
-            title: finalTitle // Simpan juga di meta biar aman (redundansi)
+            title: finalTitle 
         },
-        
         scheduledAt: new Date() 
       },
+      include: {
+        createdBy: { select: { id: true, name: true, avatar: true } }
+      }
     });
     res.status(201).json(newNote);
   } catch (error) {
@@ -611,16 +606,11 @@ export const getLeadNoteById = async (req: Request, res: Response) => {
  */
 export const updateLeadNote = async (req: Request, res: Response) => {
   const { leadId, noteId } = req.params;
-  
-  // 1. AMBIL TITLE
   const { content, title, removeAttachment } = req.body; 
-  
   const file = req.file;
   const userId = (req as any).user?.userId;
 
-  if (!content) { 
-    return res.status(400).json({ error: 'Content is required' });
-  }
+  if (!content) return res.status(400).json({ error: 'Content is required' });
 
   try {
     const noteToUpdate = await prisma.leadActivity.findFirst({
@@ -629,47 +619,47 @@ export const updateLeadNote = async (req: Request, res: Response) => {
     
     if (!noteToUpdate) return res.status(404).json({ error: 'Note not found' });
     
+    // Cek Permission
     if (noteToUpdate.createdById !== userId && (req as any).user?.role !== 'ADMIN') {
       return res.status(403).json({ error: 'Forbidden' });
     }
 
-    // Ambil meta lama
     let meta = (noteToUpdate.meta as any) || {};
-    const oldPath = meta.attachmentPath;
 
-    // Logic File (Sama seperti sebelumnya)
+    // C. Logic Update File Cloudinary (SUDAH DIPERBAIKI)
     if (file) {
-      if (oldPath) {
-        try { await fs.unlink(path.resolve(oldPath)); } catch (e) {}
+      // 1. 🔥 JIKA ADA FILE BARU, HAPUS YANG LAMA 🔥
+      if (meta.attachmentUrl) {
+          await deleteFileFromCloudinary(meta.attachmentUrl);
       }
-      const filePath = file.path.replace(/\\/g, '/');
-      meta.attachmentUrl = `${process.env.BACKEND_URL}/${filePath}`;
-      meta.attachmentPath = filePath;
+      
+      // 2. Simpan URL baru
+      meta.attachmentUrl = file.path;
+      meta.attachmentName = file.originalname;
     } 
-    else if (removeAttachment === 'true') {
-      if (oldPath) {
-        try { await fs.unlink(path.resolve(oldPath)); } catch (e) {}
+    else if (removeAttachment === 'true' || removeAttachment === true) {
+      // 3. 🔥 JIKA USER KLIK REMOVE, HAPUS FILE DI CLOUD 🔥
+      if (meta.attachmentUrl) {
+          await deleteFileFromCloudinary(meta.attachmentUrl);
       }
-      delete meta.attachmentUrl; // Gunakan delete agar property hilang
-      delete meta.attachmentPath;
+      // Hapus data di meta
+      delete meta.attachmentUrl;
+      delete meta.attachmentName;
     }
 
-    // 2. UPDATE META TITLE (Jika title berubah)
-    if (title) {
-        meta.title = title;
-    }
+    // Update Title di Meta juga
+    if (title) meta.title = title;
 
     const updatedNote = await prisma.leadActivity.update({
       where: { id: noteId },
       data: { 
         description: content,
-        
-        // 3. UPDATE KOLOM TITLE
-        // Jika user tidak kirim title baru, pakai title lama
         title: title || noteToUpdate.title, 
-        
         meta: meta, 
       },
+      include: {
+        createdBy: { select: { id: true, name: true, avatar: true } }
+      }
     });
 
     res.status(200).json(updatedNote);
@@ -700,28 +690,22 @@ export const deleteLeadNote = async (req: Request, res: Response) => {
       return res.status(403).json({ error: 'Access denied to delete this note' });
     }
 
-    // --- LOGIKA HAPUS FILE ---
+    // --- LOGIKA HAPUS FILE (VERSI CLOUDINARY) ---
     const meta = (noteToDelete.meta as any) || {};
-    const localPath = meta.attachmentPath; // Ambil path lokal (e.g., 'uploads/123-file.png')
     
-    if (localPath) {
-      try {
-        // 'path.resolve(localPath)' membuat path absolut dari path relatif
-        // Ini memastikan 'fs' tahu di mana file itu berada
-        await fs.unlink(path.resolve(localPath));
-      } catch (err) {
-        // Jangan hentikan proses jika file gagal dihapus, 
-        // mungkin file-nya sudah tidak ada. Cukup catat.
-        console.warn(`Failed to delete file from disk: ${localPath}`, err);
-      }
+    // 🔥 Cek apakah ada URL Cloudinary? Jika ada, HAPUS! 🔥
+    if (meta.attachmentUrl) {
+        await deleteFileFromCloudinary(meta.attachmentUrl);
     }
 
+    // Hapus data di database
     await prisma.leadActivity.delete({
       where: { id: noteId },
     });
 
     res.status(200).json({ message: 'Note deleted successfully' });
   } catch (error) {
+    console.error("Delete Note Error:", error);
     res.status(500).json({ error: 'Failed to delete note' });
   }
 };
@@ -1018,12 +1002,9 @@ export const sendLeadEmail = async (req: Request, res: Response) => {
     const { id } = req.params;
     const { to, cc, bcc, subject, message, replyTo, isDraft } = req.body;
     
-    // Konversi isDraft ke boolean
     const isDraftBool = isDraft === 'true' || isDraft === true;
-
     const file = req.file;
-    // @ts-ignore
-    const tokenUser = req.user; 
+    const tokenUser = (req as any).user; 
 
     if (!tokenUser) return res.status(401).json({ message: "Unauthorized" });
 
@@ -1032,31 +1013,25 @@ export const sendLeadEmail = async (req: Request, res: Response) => {
     const fromLabel = `${senderName} from CMLABS`;
     const finalReplyTo = replyTo ? replyTo : process.env.SMTP_EMAIL;
 
-    // --- LOGIKA ATTACHMENT ---
+    // --- LOGIKA ATTACHMENT CLOUDINARY ---
     let emailAttachments: any[] = [];
     let savedAttachmentUrl = null;
-    let savedAttachmentPath = null;
+    let savedAttachmentName = null;
 
     if (file) {
-      // 1. FIX UNTUK NODEMAILER (Agar file terkirim)
-      // Gunakan path.resolve untuk mendapatkan Absolute Path (D:\Folder\uploads\file.pdf)
-      const absolutePath = path.resolve(file.path);
-      
+      // D. Simpan URL Cloudinary untuk Database
+      savedAttachmentUrl = file.path;
+      savedAttachmentName = file.originalname;
+
+      // E. Siapkan Object Attachment untuk Nodemailer
+      // Nodemailer pintar, kalau dikasih 'path' berupa URL https, dia akan download otomatis.
       emailAttachments.push({
         filename: file.originalname,
-        path: absolutePath // Nodemailer butuh path absolut di Windows
+        path: file.path // 🔥 Pakai URL Cloudinary langsung!
       });
-
-      // 2. FIX UNTUK URL DATABASE (Agar PDF tidak blank)
-      // Kita pakai file.filename (nama acak dari multer) yang bersih tanpa slash
-      const baseUrl = process.env.BACKEND_URL || process.env.BASE_URL || 'http://localhost:5000';
-      savedAttachmentUrl = `${baseUrl}/uploads/${file.filename}`;
-      
-      // Simpan path relatif untuk keperluan hapus file nanti
-      savedAttachmentPath = file.path; 
     }
 
-    // --- KIRIM EMAIL (Hanya jika bukan Draft) ---
+    // --- KIRIM EMAIL (Jika bukan Draft) ---
     if (!isDraftBool) {
       await sendCRMEmail({
         to, cc, bcc, subject,
@@ -1074,18 +1049,16 @@ export const sendLeadEmail = async (req: Request, res: Response) => {
         leadId: id,
         createdById: tokenUser.userId,
         type: ActivityType.EMAIL,
-        
-        // --- PERBAIKAN DISINI ---
-        title: subject,  // Ganti 'content' jadi 'title'
-        description: message || '', // Opsional: Simpan body email di description
+        title: subject,
+        description: message || '', 
         
         meta: {
           status: isDraftBool ? 'DRAFT' : 'SENT',
           from: fromLabel,
           to, cc, bcc, replyTo: finalReplyTo,
           messageBody: message,
-          attachmentUrl: savedAttachmentUrl, 
-          attachmentPath: savedAttachmentPath 
+          attachmentUrl: savedAttachmentUrl, // Simpan URL Cloudinary
+          attachmentName: savedAttachmentName
         }
       },
       include: {
@@ -1100,7 +1073,7 @@ export const sendLeadEmail = async (req: Request, res: Response) => {
     });
 
   } catch (error) {
-    console.error("Controller Error:", error);
+    console.error("Controller Email Error:", error);
     return res.status(500).json({ 
       success: false, 
       message: error instanceof Error ? error.message : "Error processing email." 
@@ -1182,19 +1155,20 @@ export const updateLeadEmail = async (req: Request, res: Response) => {
     const newBcc = bcc || currentMeta.bcc;
     const newReplyTo = replyTo || currentMeta.replyTo;
 
-    // --- LOGIKA FILE BARU ---
+    // --- LOGIKA FILE BARU (Cloudinary) ---
     if (file) {
-      // Hapus file lama
-      if (currentMeta.attachmentPath) {
-        try { await fs.unlink(path.resolve(currentMeta.attachmentPath)); } catch (e) {}
+      // 1. 🔥 HAPUS FILE LAMA JIKA ADA 🔥
+      if (currentMeta.attachmentUrl) {
+         await deleteFileFromCloudinary(currentMeta.attachmentUrl);
       }
-      
-      const baseUrl = process.env.BACKEND_URL || process.env.BASE_URL || 'http://localhost:5000';
-      currentMeta.attachmentUrl = `${baseUrl}/uploads/${file.filename}`;
-      currentMeta.attachmentPath = file.path;
+
+      // 2. Simpan URL Baru
+      currentMeta.attachmentUrl = file.path; 
+      currentMeta.attachmentName = file.originalname;
     }
 
     // --- LOGIKA KIRIM DRAFT SEKARANG ---
+    // Cek apakah status draft dan user minta kirim sekarang (isDraft = false)
     const isSendingNow = currentMeta.status === 'DRAFT' && (isDraft === 'false' || isDraft === false);
 
     if (isSendingNow) {
@@ -1204,24 +1178,16 @@ export const updateLeadEmail = async (req: Request, res: Response) => {
 
       let attachments = [];
       
-      // Ambil path dari file yang baru diupload ATAU dari database
-      // Prioritaskan file yang baru diupload jika ada
-      const pathToSend = file ? file.path : currentMeta.attachmentPath;
+      // Ambil URL dari file baru ATAU URL dari database (Cloudinary Link)
+      const urlToSend = file ? file.path : currentMeta.attachmentUrl;
+      const nameToSend = file ? file.originalname : (currentMeta.attachmentName || "attachment");
 
-      if (pathToSend) {
-        // FIX: Resolusi Path Absolut untuk Nodemailer
-        const absolutePath = path.resolve(pathToSend);
-        
-        // Cek apakah file ada sebelum kirim
-        try {
-            await fs.access(absolutePath);
-            attachments.push({ 
-                filename: path.basename(absolutePath), 
-                path: absolutePath // Path Absolut
-            });
-        } catch (e) {
-            console.warn("Attachment file not found on disk:", absolutePath);
-        }
+      if (urlToSend) {
+         // F. Nodemailer support kirim via URL
+         attachments.push({ 
+             filename: nameToSend, 
+             path: urlToSend 
+         });
       }
 
       await sendCRMEmail({
@@ -1247,10 +1213,15 @@ export const updateLeadEmail = async (req: Request, res: Response) => {
     const updatedEmail = await prisma.leadActivity.update({
       where: { id: emailId },
       data: { 
-         title: newSubject, // Ganti 'content' jadi 'title'
+         title: newSubject,
+         description: newMessage || '', 
          meta: currentMeta 
       },
+      include: {
+        createdBy: { select: { id: true, name: true, avatar: true } }
+      }
     });
+    
     res.status(200).json({ 
       success: true, 
       message: isSendingNow ? "Draft sent successfully." : "Draft updated.",
@@ -1262,6 +1233,7 @@ export const updateLeadEmail = async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Failed to update email' });
   }
 };
+
 // --- 5. DELETE: Hapus Log Email ---
 export const deleteLeadEmail = async (req: Request, res: Response) => {
   const { leadId, emailId } = req.params;
@@ -1272,7 +1244,7 @@ export const deleteLeadEmail = async (req: Request, res: Response) => {
   const userRole = req.user?.role;
 
   try {
-    // 1. Cari dulu datanya (jangan langsung delete)
+    // 1. Cari dulu datanya
     const emailToDelete = await prisma.leadActivity.findFirst({
       where: { id: emailId, leadId: leadId },
     });
@@ -1281,30 +1253,18 @@ export const deleteLeadEmail = async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Email log not found' });
     }
 
-    // 2. Cek Permission (Hanya Pembuat atau Admin yang boleh hapus)
+    // 2. Cek Permission
     // @ts-ignore
     if (emailToDelete.createdById !== userId && userRole !== 'ADMIN') {
       return res.status(403).json({ error: 'Access denied' });
     }
 
-    // 3. --- LOGIKA HAPUS FILE FISIK ---
-    // Ambil data meta untuk melihat apakah ada attachment
+    // 3. --- LOGIKA HAPUS FILE FISIK (Cloudinary) ---
     const meta = (emailToDelete.meta as any) || {};
-    const localPath = meta.attachmentPath; // Kita ambil path yang tersimpan (misal: uploads/123.pdf)
-
-    if (localPath) {
-      try {
-        // Resolve path agar menjadi absolut (C:\Project\uploads\123.pdf)
-        const absolutePath = path.resolve(localPath);
-        
-        // Cek apakah file ada, lalu hapus
-        await fs.access(absolutePath); // Cek eksistensi
-        await fs.unlink(absolutePath); // Hapus file
-        console.log(`🗑️ File deleted: ${absolutePath}`);
-      } catch (err) {
-        // Jika file tidak ketemu (mungkin sudah dihapus manual), biarkan saja jangan error
-        console.warn(`⚠️ Warning: Failed to delete attachment file: ${localPath}`, err);
-      }
+    
+    // 🔥 Cek attachmentUrl, lalu hapus via helper Cloudinary 🔥
+    if (meta.attachmentUrl) {
+        await deleteFileFromCloudinary(meta.attachmentUrl);
     }
 
     // 4. Hapus Record dari Database

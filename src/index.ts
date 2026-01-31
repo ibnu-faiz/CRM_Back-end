@@ -46,16 +46,14 @@ app.use(express.urlencoded({ extended: true }));
 // 3. STATIC FOLDER (AGAR ATTACHMENT BISA DIBUKA)
 // =======================================================================
 // Pastikan folder 'uploads' sudah dibuat manual di root project
+app.use('/public/uploads', express.static(path.join(__dirname, '../public/uploads')));
+
 app.use('/uploads', express.static(path.join(__dirname, '../uploads'), {
-  // Fungsi ini akan dijalankan setiap kali ada yang akses file di folder uploads
+  // Logic PDF Viewer kamu (Keren ini, pertahankan!)
   setHeaders: (res, filePath) => {
     const lowerPath = filePath.toLowerCase();
-    
-    // Jika file berakhiran .pdf
     if (lowerPath.endsWith('.pdf')) {
-      // 1. Beritahu browser ini tipe PDF
       res.setHeader('Content-Type', 'application/pdf');
-      // 2. Beritahu browser untuk MENAMPILKANNYA (inline), bukan download
       res.setHeader('Content-Disposition', 'inline');
     }
   }

@@ -1,14 +1,19 @@
 // src/controllers/team.controller.ts
 import { Request, Response } from 'express';
 import prisma from '../config/database';
-import { hashPassword } from '../utils/password'; // Asumsi Anda punya ini dari auth
+import { hashPassword } from '../utils/password'; 
+// 👇 Import helper sakti penghapus file
+import { deleteFileFromCloudinary } from '../utils/cloudinary'; 
 
-// GET /api/team - Mendapatkan semua user (anggota tim)
+// GET /api/team - Mendapatkan semua user
 export const getAllTeamMembers = async (req: Request, res: Response) => {
   try {
     const members = await prisma.user.findMany({
       orderBy: { name: 'asc' },
-      // Kita bisa tambahkan filter status atau search di sini nanti
+      select: { // Sebaiknya select field agar password tidak ikut terkirim
+        id: true, name: true, email: true, role: true, 
+        avatar: true, status: true, department: true
+      }
     });
     res.status(200).json(members);
   } catch (error) {
@@ -23,52 +28,30 @@ export const getTeamMemberById = async (req: Request, res: Response) => {
     const member = await prisma.user.findUnique({
       where: { id },
       select: {
-        id: true,
-        name: true,
-        email: true,
-        phone: true,
-        role: true,
-        status: true,
-        avatar: true,
-        createdAt: true,
-        department: true,
-        location: true,
-        bio: true,
-        skills: true,
-        joinedAt: true,
-        reportsToId: true,
+        id: true, name: true, email: true, phone: true, role: true,
+        status: true, avatar: true, createdAt: true, department: true,
+        location: true, bio: true, skills: true, joinedAt: true, reportsToId: true,
         
-        // Ambil Info Manager
         reportsTo: { 
             select: { id: true, name: true } 
         },
 
-        // --- TAMBAHAN BARU: Ambil Assigned Leads ---
         assignedLeads: {
             select: {
-                id: true,
-                title: true,
-                status: true,
-                company: true,
-                createdAt: true,
-                value: true,
+                id: true, title: true, status: true, company: true, 
+                createdAt: true, value: true,
                 assignedUsers: {
-                    select: {
-                        name: true,
-                        avatar: true,
-                    }
+                    select: { name: true, avatar: true }
                 }
-
             }
         },
-        // ------------------------------------------
         leadsCreated: {
             select: {
-                id: true, title: true, status: true, company: true, createdAt: true, value: true,
-                // Kita perlu tahu siapa yang mengerjakan lead buatan admin ini
+                id: true, title: true, status: true, company: true, 
+                createdAt: true, value: true,
                 assignedUsers: { select: { name: true, avatar: true } }
             },
-            orderBy: { createdAt: 'desc' } // Urutkan dari yang terbaru
+            orderBy: { createdAt: 'desc' } 
         }
       },
     });
@@ -82,22 +65,15 @@ export const getTeamMemberById = async (req: Request, res: Response) => {
   }
 };
 
-// POST /api/team - Membuat anggota tim baru (dari AddTeamModal)
+// POST /api/team - Membuat anggota tim baru
 export const createTeamMember = async (req: Request, res: Response) => {
   const { 
-    name, 
-    email, 
-    phone, 
-    password, // PENTING: Modal Anda harus mengirim password!
-    role, 
-    department, 
-    status, 
-    joinedAt, 
-    location, 
-    bio, 
-    skills, 
-    reportsToId 
+    name, email, phone, password, role, department, 
+    status, joinedAt, location, bio, skills, reportsToId 
   } = req.body;
+  
+  // Handle jika admin langsung upload avatar saat create
+  const file = req.file; 
 
   if (!name || !email || !password || !role) {
     return res.status(400).json({ error: 'Name, email, password, and role are required' });
@@ -106,6 +82,12 @@ export const createTeamMember = async (req: Request, res: Response) => {
   try {
     const hashedPassword = await hashPassword(password);
     
+    // Siapkan data avatar jika ada
+    let avatarUrl = null;
+    if (file) {
+        avatarUrl = file.path;
+    }
+
     const newMember = await prisma.user.create({
       data: {
         name,
@@ -115,18 +97,22 @@ export const createTeamMember = async (req: Request, res: Response) => {
         role,
         department,
         status,
+        avatar: avatarUrl, // Simpan URL Avatar
         joinedAt: joinedAt ? new Date(joinedAt) : new Date(),
         location,
         bio,
-        skills: skills || [], // Simpan skills sebagai JSON
+        skills: skills || [], 
         reportsToId: reportsToId || null,
       },
     });
-    // Jangan kirim balik password hash
+
     const { password: _, ...result } = newMember;
     res.status(201).json(result);
   } catch (error: any) {
-    if (error.code === 'P2002') { // Error unik (email sudah ada)
+    // Jika error dan sudah terlanjur upload file, hapus lagi filenya (Safety Net)
+    if (file) await deleteFileFromCloudinary(file.path);
+
+    if (error.code === 'P2002') { 
       return res.status(409).json({ error: 'Email already exists' });
     }
     res.status(500).json({ error: 'Failed to create team member' });
@@ -137,39 +123,49 @@ export const createTeamMember = async (req: Request, res: Response) => {
 export const updateTeamMember = async (req: Request, res: Response) => {
   const { id } = req.params;
   const { 
-    name, 
-    email, 
-    phone, 
-    role, 
-    department, 
-    status, 
-    joinedAt, 
-    location, 
-    bio, 
-    skills, 
-    reportsToId 
+    name, email, phone, role, department, status, 
+    joinedAt, location, bio, skills, reportsToId,
+    password // Admin mungkin mengganti password user
   } = req.body;
+  
+  const file = req.file; // Admin mungkin mengganti avatar user
 
   try {
+    // 1. Cari User Lama dulu
+    const oldUser = await prisma.user.findUnique({ where: { id } });
+    if (!oldUser) return res.status(404).json({ error: 'User not found' });
+
+    let updateData: any = {
+        name, email, phone, role, department, status,
+        location, bio, skills: skills || undefined,
+        reportsToId: reportsToId || null,
+        joinedAt: joinedAt ? new Date(joinedAt) : undefined,
+    };
+
+    // 2. Logic Update Password (Jika diisi)
+    if (password && password.trim() !== "") {
+        updateData.password = await hashPassword(password);
+    }
+
+    // 3. Logic Update Avatar & Hapus Sampah Cloudinary
+    if (file) {
+        // Hapus foto lama di Cloudinary jika ada
+        if (oldUser.avatar) {
+            await deleteFileFromCloudinary(oldUser.avatar);
+        }
+        // Set foto baru
+        updateData.avatar = file.path;
+    }
+
     const updatedMember = await prisma.user.update({
       where: { id },
-      data: {
-        name,
-        email,
-        phone,
-        role,
-        department,
-        status,
-        joinedAt: joinedAt ? new Date(joinedAt) : undefined,
-        location,
-        bio,
-        skills: skills || undefined,
-        reportsToId: reportsToId || null,
-      },
+      data: updateData,
     });
-    const { password, ...result } = updatedMember;
+
+    const { password: newPass, ...result } = updatedMember;
     res.status(200).json(result);
   } catch (error) {
+    console.error("Update Team Member Error:", error);
     res.status(500).json({ error: 'Failed to update team member' });
   }
 };
@@ -178,20 +174,33 @@ export const updateTeamMember = async (req: Request, res: Response) => {
 export const deleteTeamMember = async (req: Request, res: Response) => {
   const { id } = req.params;
   
-  // Validasi agar user tidak bisa menghapus diri sendiri (opsional)
   const loggedInUserId = (req as any).user?.userId;
   if (id === loggedInUserId) {
      return res.status(403).json({ error: "You cannot delete your own account." });
   }
 
   try {
-    // TODO: Handle relasi (apa yang terjadi pada leads/activities milik user ini?)
-    // Untuk saat ini, kita anggap bisa dihapus
+    // 1. Cari User untuk dapat URL Avatar
+    const userToDelete = await prisma.user.findUnique({ 
+        where: { id },
+        select: { avatar: true } // Cuma butuh info avatar
+    });
+
+    if (!userToDelete) return res.status(404).json({ error: "User not found" });
+
+    // 2. 🔥 HAPUS FOTO DI CLOUDINARY 🔥
+    if (userToDelete.avatar) {
+        await deleteFileFromCloudinary(userToDelete.avatar);
+    }
+
+    // 3. Hapus User dari DB
     await prisma.user.delete({
       where: { id },
     });
+    
     res.status(200).json({ message: 'Team member deleted successfully' });
   } catch (error) {
+    console.error("Delete Team Member Error:", error);
     res.status(500).json({ error: 'Failed to delete team member' });
   }
 };
