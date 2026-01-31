@@ -12,7 +12,9 @@ export const getAllTeamMembers = async (req: Request, res: Response) => {
       orderBy: { name: 'asc' },
       select: { // Sebaiknya select field agar password tidak ikut terkirim
         id: true, name: true, email: true, role: true, 
-        avatar: true, status: true, department: true
+        avatar: true, status: true, department: true, 
+        createdAt: true, 
+        joinedAt: true,
       }
     });
     res.status(200).json(members);
@@ -20,6 +22,7 @@ export const getAllTeamMembers = async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Failed to fetch team members' });
   }
 };
+
 
 // GET /api/team/:id - Mendapatkan satu anggota tim
 export const getTeamMemberById = async (req: Request, res: Response) => {

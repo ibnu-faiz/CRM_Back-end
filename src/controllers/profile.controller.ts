@@ -1,10 +1,11 @@
+// src/controllers/profile.controller.ts
 import { Request, Response } from 'express';
 import prisma from '../config/database';
 import { deleteFileFromCloudinary } from '../utils/cloudinary';
 
 export const getMyProfile = async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).user?.userId; // Casting any biar aman
+    const userId = (req as any).user?.userId;
 
     if (!userId) {
         return res.status(401).json({ error: "Unauthorized" });
@@ -16,8 +17,16 @@ export const getMyProfile = async (req: Request, res: Response) => {
         id: true,
         name: true,
         email: true,
+        phone: true,      // Tambahkan ini
+        location: true,   // Tambahkan ini
+        bio: true,        // Tambahkan ini
+        skills: true,     // Tambahkan ini
+        department: true, // Tambahkan ini
         role: true,
         avatar: true,
+        joinedAt: true,   // Tambahkan ini (buat display joined date)
+        createdAt: true,  // Tambahkan ini
+        
         // Sertakan field preferences:
         notifyLeadAssign: true,
         notifyLeadUpdate: true,
@@ -40,30 +49,25 @@ export const getMyProfile = async (req: Request, res: Response) => {
 
 export const updateAvatar = async (req: Request, res: Response) => {
   try {
-    // 1. Cek apakah ada file yang diupload?
     if (!req.file) {
       return res.status(400).json({ error: 'No image file uploaded' });
     }
 
-    // Ambil ID user dari Token
     const userId = (req as any).user.userId;
     
-    // 2. 🔥 CARI AVATAR LAMA DI DATABASE 🔥
-    // Kita butuh URL lama untuk dihapus dari Cloudinary
+    // Cari Avatar Lama
     const oldUser = await prisma.user.findUnique({ 
         where: { id: userId },
         select: { avatar: true } 
     });
 
-    // 3. 🔥 JIKA ADA AVATAR LAMA, HAPUS DARI CLOUDINARY 🔥
+    // Hapus Avatar Lama di Cloudinary
     if (oldUser?.avatar) {
         await deleteFileFromCloudinary(oldUser.avatar);
     }
     
-    // 4. Ambil URL Baru dari Cloudinary
     const newAvatarUrl = req.file.path; 
 
-    // 5. Update Database dengan URL Baru
     const updatedUser = await prisma.user.update({
       where: { id: userId },
       data: { avatar: newAvatarUrl },
@@ -86,18 +90,15 @@ export const deleteAvatar = async (req: Request, res: Response) => {
     const userId = (req as any).user?.userId;
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
-    // 1. 🔥 AMBIL DATA USER UNTUK DAPAT URL AVATAR 🔥
     const user = await prisma.user.findUnique({
       where: { id: userId },
       select: { avatar: true },
     });
 
-    // 2. 🔥 HAPUS FILE DI CLOUDINARY (JIKA ADA) 🔥
     if (user?.avatar) {
        await deleteFileFromCloudinary(user.avatar);
     }
 
-    // 3. Update Database (Set NULL)
     const updatedUser = await prisma.user.update({
       where: { id: userId },
       data: { avatar: null },

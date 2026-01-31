@@ -298,7 +298,7 @@ export const updateProfile = async (req: Request, res: Response): Promise<void> 
       return;
     }
 
-    const { name, phone, location, bio, skills } = req.body;
+    const { name, phone, location, bio, skills, department } = req.body;
 
     const updatedUser = await prisma.user.update({
       where: { id: userId },
@@ -308,6 +308,7 @@ export const updateProfile = async (req: Request, res: Response): Promise<void> 
         location,
         bio,
         skills: skills || [], // Simpan skills sebagai JSON array
+        department: department,
       },
       select: { 
         id: true, name: true, email: true, phone: true, role: true,
