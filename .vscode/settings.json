@@ -1,5 +1,14 @@
 {
     "conventionalCommits.scopes": [
-        "ai"
+        "ai",
+        "json",
+        "dashboard",
+        "activities",
+        "invoice",
+        "leads",
+        "team",
+        "profile",
+        "report",
+        "setting"
     ]
 }
