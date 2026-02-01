@@ -3,7 +3,6 @@ import { PrismaClient, LeadStatus } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
-// Interface untuk Request yang sudah ditempel user oleh Middleware
 interface AuthRequest extends Request {
   user?: {
     userId: string;
@@ -14,9 +13,13 @@ interface AuthRequest extends Request {
 
 export const getSalesReport = async (req: AuthRequest, res: Response) => {
   try {
-    const { viewType, year, month, quarter } = req.body;
-    
-    // 1. AMBIL DATA USER DARI TOKEN (Middleware)
+    // Pastikan konversi ke Number agar aman
+    const { viewType } = req.body;
+    const year = Number(req.body.year);
+    const month = Number(req.body.month);     // Ex: 2 (Februari)
+    const quarter = Number(req.body.quarter); // Ex: 1
+
+    // 1. AMBIL DATA USER DARI TOKEN
     const user = req.user; 
     
     if (!user) {
@@ -28,30 +31,36 @@ export const getSalesReport = async (req: AuthRequest, res: Response) => {
       isArchived: false,
     };
 
-    // ==========================================
-    // LOGIKA FILTER PEMILIK (SANGAT PENTING)
-    // ==========================================
-    // Jika User BUKAN Admin, paksa filter hanya lead yang ditugaskan ke dia
+    // Filter Pemilik (Kecuali Admin)
     if (user.role !== 'ADMIN') {
       whereCondition.assignedUsers = {
-        some: {
-          id: user.userId // Cari lead di mana user ini ada dalam daftar assignedUsers
-        }
+        some: { id: user.userId }
       };
     }
-    // Catatan: Jika ADMIN, filter ini tidak dipasang, jadi Admin bisa lihat semua.
 
     let orderByCondition: any = {};
+    let startDate: Date;
+    let endDate: Date;
 
     // ==========================================
-    // LOGIKA 1: MODE BULANAN
+    // LOGIKA TANGGAL (FIX TIMEZONE WIB)
     // ==========================================
+    // Kita gunakan Date.UTC untuk membuat tanggal bersih, 
+    // lalu kita kurangi 7 jam agar sesuai jam 00:00 WIB.
+    
     if (viewType === 'MONTHLY') {
-      const startDate = new Date(year, month - 1, 1);
-      const endDate = new Date(year, month, 0, 23, 59, 59, 999);
+      // Step 1: Buat tanggal UTC murni sesuai input
+      // Note: month - 1 karena di JS bulan dimulai dari 0 (Jan=0, Feb=1)
+      startDate = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0));
+      endDate = new Date(Date.UTC(year, month, 0, 23, 59, 59, 999)); // Tanggal 0 bulan berikutnya = tgl terakhir bulan ini
+
+      // Step 2: KOREKSI TIMEZONE WIB (UTC-7)
+      // 00:00 WIB adalah 17:00 UTC hari sebelumnya.
+      startDate.setHours(startDate.getHours() - 7);
+      endDate.setHours(endDate.getHours() - 7);
 
       whereCondition = {
-        ...whereCondition, // Gabungkan dengan filter assignedUsers di atas
+        ...whereCondition,
         createdAt: {
           gte: startDate,
           lte: endDate,
@@ -61,16 +70,19 @@ export const getSalesReport = async (req: AuthRequest, res: Response) => {
       orderByCondition = { createdAt: 'asc' };
     } 
     
-    // ==========================================
-    // LOGIKA 2: MODE QUARTER
-    // ==========================================
     else if (viewType === 'QUARTERLY') {
       const startMonthIndex = (quarter - 1) * 3;
-      const startDate = new Date(year, startMonthIndex, 1);
-      const endDate = new Date(year, startMonthIndex + 3, 0, 23, 59, 59, 999);
+
+      // Step 1: Buat tanggal UTC murni
+      startDate = new Date(Date.UTC(year, startMonthIndex, 1, 0, 0, 0));
+      endDate = new Date(Date.UTC(year, startMonthIndex + 3, 0, 23, 59, 59, 999));
+
+      // Step 2: KOREKSI TIMEZONE WIB (UTC-7)
+      startDate.setHours(startDate.getHours() - 7);
+      endDate.setHours(endDate.getHours() - 7);
 
       whereCondition = {
-        ...whereCondition, // Gabungkan dengan filter assignedUsers di atas
+        ...whereCondition,
         status: LeadStatus.WON,
         wonAt: {
           gte: startDate,
@@ -87,12 +99,11 @@ export const getSalesReport = async (req: AuthRequest, res: Response) => {
       orderBy: orderByCondition,
       include: {
         createdBy: { select: { name: true } },
-        // Opsional: Kita bisa include assignedUsers juga untuk memastikan
         assignedUsers: { select: { name: true } } 
       }
     });
 
-    // 4. Hitung Summary (Sama seperti sebelumnya)
+    // 4. Hitung Summary
     const summary = {
       totalLeads: leads.length,
       totalValuePipeline: 0,
@@ -115,29 +126,30 @@ export const getSalesReport = async (req: AuthRequest, res: Response) => {
         summary.countOpen++;
       }
 
-      // Helper format tanggal
-      const formatDate = (date: Date | null) => date ? date.toISOString().split('T')[0] : '-';
+      // Helper format tanggal (Tampilkan dalam format Lokal User)
+      const formatDate = (date: Date | null) => {
+        if (!date) return '-';
+        // Paksa tampilan ke 'id-ID' supaya user melihat tanggal sesuai jam WIB dia
+        return new Date(date).toLocaleDateString('id-ID', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit'
+        }).split('/').reverse().join('-'); // Format YYYY-MM-DD
+      };
 
       const formatStatus = (status: string) => {
         return status
-          .replace(/_/g, ' ')             // Ganti underscore dengan spasi
-          .toLowerCase()                  // Kecilkan semua huruf
-          .replace(/\b\w/g, c => c.toUpperCase()); // Kapital huruf pertama tiap kata
+          .replace(/_/g, ' ')
+          .toLowerCase()
+          .replace(/\b\w/g, c => c.toUpperCase());
       };
 
-      // --- LOGIKA BARU UNTUK TANGGAL WON/LOST ---
       let displayDate = '-';
-
-      // Cek 1: Jika Status WON, baru ambil wonAt
       if (lead.status === LeadStatus.WON && lead.wonAt) {
         displayDate = formatDate(lead.wonAt);
-      } 
-      // Cek 2: Jika Status LOST, baru ambil lostAt
-      else if (lead.status === LeadStatus.LOST && lead.lostAt) {
+      } else if (lead.status === LeadStatus.LOST && lead.lostAt) {
         displayDate = formatDate(lead.lostAt);
       }
-      // Jika statusnya NEGOTIATION/OPEN (meskipun dulu pernah ada wonAt), 
-      // dia akan tetap '-' karena tidak masuk if di atas.
 
       return {
         no: index + 1,
@@ -149,20 +161,24 @@ export const getSalesReport = async (req: AuthRequest, res: Response) => {
         email: lead.email || '-',
         sourceOrigin: lead.sourceOrigin || '-',
         sourceChannel: lead.sourceChannel || '-',
-        createdAt: formatDate(lead.createdAt),
+        createdAt: formatDate(lead.createdAt), // Gunakan helper baru
         dueDate: formatDate(lead.dueDate),
-        
         status: formatStatus(lead.status),
         value: lead.value,
-        
-        // Gunakan variabel yang sudah divalidasi statusnya
         wonLostAt: displayDate, 
       };
     });
 
     return res.status(200).json({
       success: true,
-      filter: { viewType, period: viewType === 'MONTHLY' ? `${month}-${year}` : `Q${quarter}-${year}` },
+      filter: { 
+        viewType, 
+        period: viewType === 'MONTHLY' ? `${month}-${year}` : `Q${quarter}-${year}`,
+        dateRange: {
+            start: startDate.toISOString(),
+            end: endDate.toISOString()
+        }
+      },
       summary: summary,
       data: formattedData,
     });
